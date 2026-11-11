@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>thebar — research society</title>
+<style>
+  body { font: 14px/1.45 -apple-system, system-ui, sans-serif; margin: 0; color: #222; background: #fafafa; }
+  header { background: #222; color: #eee; padding: 8px 16px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  header b { margin-right: 8px; }
+  header a { color: #ccc; cursor: pointer; }
+  header a.on { color: #fff; text-decoration: underline; }
+  main { padding: 16px; max-width: 1100px; }
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px 12px; margin: 8px 0; }
+  .meta { color: #777; font-size: 12px; }
+  pre { white-space: pre-wrap; word-wrap: break-word; margin: 6px 0; font: 13px/1.4 ui-monospace, monospace; }
+  .ref { color: #0645ad; cursor: pointer; text-decoration: underline; }
+  button { margin-right: 4px; }
+  select, input, textarea { font: inherit; }
+  textarea { width: 100%; height: 420px; font-family: ui-monospace, monospace; font-size: 13px; }
+  .row { display: flex; gap: 12px; } .row > * { flex: 1; }
+  #modal { position: fixed; inset: 5% 10%; background: #fff; border: 1px solid #999; padding: 12px; overflow: auto; display: none; box-shadow: 0 4px 30px #0004; }
+  .t-update, .t-post, .t-dm { border-left: 4px solid #2a7; }
+  .t-tool_call, .t-tool_result { border-left: 4px solid #bbb; }
+  .t-insight, .t-proposal, .t-experiment, .t-paper_notes { border-left: 4px solid #a5f; }
+  .t-activity_ended { border-left: 4px solid #f90; }
+</style>
+</head>
+<body>
+<header>
+  <b>thebar</b>
+  <span id="tabs"></span>
+  <span>run: <select id="run"></select></span>
+</header>
+<main id="main"></main>
+<div id="modal"><button onclick="modal.style.display='none'">close</button><div id="modalBody"></div></div>
+<script>
+const TABS = ['runs', 'feed', 'boards', 'dms', 'agents', 'papers', 'artifacts', 'experiments', 'config', 'status'];
+let tab = location.hash.slice(1) || 'runs';
+let runId = null;
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// Escape text and make references like paper:3 or proposal:2@1 clickable.
+const linkify = (s) => esc(s).replace(/\b(paper|insight|proposal|message|experiment):(\d+)(@\d+)?/g,
+  (m) => `<span class="ref" onclick="openRef('${m}')">${m}</span>`);
+const api = async (path, opts) => {
+  const r = await fetch(path, opts);
+  const body = await r.json();
+  if (!r.ok) { alert(body.detail || r.statusText); throw new Error(body.detail); }
+  return body;
+};
+const post = (path, body) => api(path, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body || {})});
+const show = (html) => { $('#modalBody').innerHTML = html; $('#modal').style.display = 'block'; };
+async function openRef(ref) { const r = await api('/api/ref/' + ref); show(`<h3>${esc(ref)}</h3><pre>${linkify(r.text)}</pre>`); }
+async function openFile(path) { const r = await api('/api/file?path=' + encodeURIComponent(path)); show(`<h3>${esc(path)}</h3><pre>${linkify(r.text)}</pre>`); }
+
+$('#tabs').innerHTML = TABS.map(t => `<a data-t="${t}">${t}</a>`).join(' ');
+$('#tabs').onclick = (e) => { if (e.target.dataset.t) { location.hash = e.target.dataset.t; } };
+window.onhashchange = () => { tab = location.hash.slice(1) || 'runs'; render(); };
+$('#run').onchange = () => { runId = +$('#run').value; render(); };
+
+async function loadRuns() {
+  const runs = await api('/api/runs');
+  if (!runId && runs.length) runId = runs[0].id;
+  $('#run').innerHTML = runs.map(r => `<option value="${r.id}" ${r.id === runId ? 'selected' : ''}>#${r.id} ${r.status}</option>`).join('');
+  return runs;
+}
+
+const views = {
+  async runs() {
+    const runs = await loadRuns();
+    const control = (r, a) => `<button onclick="post('/api/runs/${r.id}/${a}').then(render)">${a}</button>`;
+    return `<div class="card"><b>New run</b><br>
+      <input id="q" style="width:80%" placeholder="Research question (blank = config/society.yaml)">
+      <button onclick="post('/api/runs', {question: $('#q').value || null}).then(r => { runId = r.id; render(); })">create</button></div>` +
+      runs.map(r => `<div class="card"><b>#${r.id}</b> [${r.status}] ${esc(r.question)}
+        <div class="meta">agents: ${r.agents.join(', ')} · created ${r.created_at} · started ${r.started_at || '-'} · ended ${r.ended_at || '-'}</div>
+        <div class="meta">last activity: ${r.last_activity ? `${r.last_activity.agent_id} ${r.last_activity.status} ${r.last_activity.started_at}` : '-'}
+          · newest artifact: ${r.newest_artifact ? linkify(`${r.newest_artifact.kind}:${r.newest_artifact.id}`) + ' ' + esc(r.newest_artifact.title) : '-'}</div>
+        ${['start', 'pause', 'resume', 'stop'].map(a => control(r, a)).join('')}</div>`).join('');
+  },
+  async feed() {
+    const types = ['', 'update', 'post', 'dm', 'tool_call', 'tool_result', 'paper_read', 'paper_notes', 'insight', 'proposal', 'experiment', 'activity_started', 'activity_ended', 'run_status'];
+    const f = window.feedFilter || {agent: '', type: ''};
+    const events = (await api(`/api/events?run_id=${runId || ''}&newest=300`)).reverse()
+      .filter(e => (!f.agent || e.agent_id === f.agent) && (!f.type || e.type === f.type));
+    return `<div>agent <input size=8 value="${esc(f.agent)}" onchange="feedFilter={...(window.feedFilter||{type:''}), agent:this.value}; render()">
+      type <select onchange="feedFilter={...(window.feedFilter||{agent:''}), type:this.value}; render()">${types.map(t => `<option ${t === f.type ? 'selected' : ''}>${t}</option>`).join('')}</select></div>` +
+      events.map(e => `<div class="card t-${e.type}"><div class="meta">#${e.id} ${e.created_at} · <b>${e.agent_id || 'system'}</b> · ${e.type}
+        ${e.activity_id ? '· activity ' + e.activity_id : ''} ${e.type === 'activity_started' ? `<button onclick="post('/api/activities/${e.activity_id}/cancel')">cancel</button>` : ''}</div>
+        <pre>${linkify(summarize(e))}</pre></div>`).join('');
+  },
+  async boards() {
+    if (!runId) return 'No run.';
+    const threads = await api(`/api/runs/${runId}/threads`);
+    let html = threads.map(t => `<div class="card"><a class="ref" onclick="openThread(${t.id})">${esc(t.title)}</a>
+      <div class="meta">by ${t.author} · ${t.messages} messages · last ${t.last_post || '-'}</div></div>`).join('');
+    return html + `<div class="card"><input id="sq" placeholder="search messages, notes, insights, proposals"> <button onclick="doSearch()">search</button><div id="sr"></div></div>`;
+  },
+  async dms() {
+    if (!runId) return 'No run.';
+    const msgs = await api(`/api/runs/${runId}/dms`);
+    return msgs.map(m => `<div class="card t-dm"><div class="meta">message:${m.id} · ${m.author} → ${m.recipient} · ${m.created_at}</div><pre>${linkify(m.body)}</pre></div>`).join('') || 'No direct messages yet.';
+  },
+  async agents() {
+    const agents = await api('/api/agents');
+    const run = runId ? await api(`/api/runs/${runId}`) : {agents: []};
+    return agents.map(a => {
+      const s = run.agents.find(x => x.id === a.id);
+      return `<div class="card"><h3>${esc(a.name)} <span class="meta">(${a.id}) ${a.enabled ? '' : 'disabled'}</span></h3>
+        <div class="meta">model ${a.model}: ${esc(JSON.stringify(a.model_config))}</div>
+        <div class="meta">prompt <span class="ref" onclick="openFile('${a.identity_prompt}')">${a.identity_prompt}</span> · papers ${a.papers_dir} · workspace ${a.workspace}</div>
+        ${s ? `<p>status: ${s.paused ? 'paused' : s.busy ? 'working' : 'idle'} · next activity ${s.next_activity || '-'} · actual interval ${s.actual_interval_minutes ?? '-'} min
+          <button onclick="post('/api/runs/${runId}/agents/${a.id}/pause').then(render)">pause</button>
+          <button onclick="post('/api/runs/${runId}/agents/${a.id}/resume').then(render)">resume</button>
+          <button onclick="post('/api/runs/${runId}/agents/${a.id}/wake').then(render)">wake now</button></p>
+          <b>Recent activities</b>${s.activities.map(x => `<div class="meta">#${x.id} ${x.trigger} ${x.status} ${x.started_at} → ${x.ended_at || ''} ${esc(x.error || '')} prompt ${x.prompt_hash}</div>`).join('')}` : ''}
+        <b>Memory</b><pre>${linkify(a.memory || '(empty)')}</pre>
+        <b>Tools</b> ${a.tools.map(t => `<span class="ref" onclick="openFile('${t}')">${esc(t)}</span>`).join(' ') || '(none)'}</div>`;
+    }).join('');
+  },
+  async papers() {
+    const papers = await api('/api/papers');
+    return papers.map(p => `<div class="card"><b>${linkify('paper:' + p.id)}</b> ${esc(p.title)}
+      <div class="meta">${esc(p.authors)} ${p.year || ''} · ${p.collection} · arXiv ${p.arxiv_id || '-'} · doi ${esc(p.doi || '-')} · ${p.url ? `<a href="${esc(p.url)}">source</a>` : ''}
+      <a href="/api/papers/${p.id}/pdf" target="_blank">pdf</a> · reads: ${p.reads.map(r => r.agent_id + '=' + r.status).join(', ') || 'none'}</div>
+      ${p.notes_path ? `<span class="ref" onclick="openFile('${p.notes_path}')">notes</span>` : ''}</div>`).join('');
+  },
+  async artifacts() {
+    const arts = await api('/api/artifacts');
+    return arts.map(a => `<div class="card"><b>${linkify(a.kind + ':' + a.id)}</b> ${esc(a.title)}
+      <div class="meta">by ${a.author} · revision ${a.revision} ${a.forked_from ? '· forked from ' + a.kind + ':' + a.forked_from : ''} · ${a.path}</div>
+      <button onclick="openArtifact(${a.id})">history</button></div>`).join('') || 'No insights or proposals yet.';
+  },
+  async experiments() {
+    const exps = await api('/api/experiments');
+    const calls = await api('/api/tool_calls?limit=40');
+    return '<h3>Experiments</h3>' + (exps.map(e => `<div class="card t-experiment"><b>${linkify('experiment:' + e.id)}</b> by ${e.author} · exit ${e.exit_code} · ${e.created_at}
+      <div>${esc(e.hypothesis)}</div><div class="meta">${e.files.map(f => `<span class="ref" onclick="openFile('${e.path}/${f}')">${f}</span>`).join(' ')}</div>
+      <pre>${esc(e.results || '')}</pre></div>`).join('') || 'None yet.') +
+      '<h3>Recent tool calls</h3>' + calls.map(c => `<div class="card t-tool_call"><div class="meta">${c.agent_id} · activity ${c.activity_id} · ${c.tool} · ${c.started_at}</div>
+      <pre>${esc((c.args || '').slice(0, 1500))}</pre><details><summary>result</summary><pre>${esc(c.result || '')}</pre></details></div>`).join('');
+  },
+  async config() {
+    const cfg = await api('/api/config');
+    return `<div class="row"><div><select id="cf" onchange="loadConfig()">${cfg.files.map(f => `<option>${f}</option>`).join('')}</select>
+      <button onclick="saveConfig()">save</button><div class="meta">Changes apply to the next activity. Earlier text is kept in history.</div>
+      <textarea id="ct"></textarea></div></div>
+      <b>Edit history</b>${cfg.history.map(h => `<div class="meta">${h.created_at} ${h.path}</div>`).join('')}`;
+  },
+  async status() {
+    return `<pre>${esc(JSON.stringify(await api('/api/status'), null, 2))}</pre>`;
+  },
+};
+
+function summarize(e) {
+  const p = e.payload;
+  switch (e.type) {
+    case 'update': case 'post': return p.body;
+    case 'dm': return `to ${p.to}: ${p.body}`;
+    case 'tool_call': return `${p.tool}(${p.args})`;
+    case 'tool_result': return `${p.tool} → ${p.result}`;
+    case 'insight': case 'proposal': return `${e.type}:${p.id} "${p.title}" revision ${p.revision}`;
+    case 'experiment': return `experiment:${p.id} exit ${p.exit_code}: ${p.hypothesis}\n${p.results}`;
+    default: return JSON.stringify(p);
+  }
+}
+
+async function openThread(id) {
+  const t = await api('/api/threads/' + id);
+  show(`<h3>${esc(t.thread.title)}</h3>` + t.messages.map(m => `<div class="card"><div class="meta">message:${m.id} · ${m.author} · ${m.created_at}</div><pre>${linkify(m.body)}</pre></div>`).join(''));
+}
+async function openArtifact(id) {
+  const a = await api('/api/artifacts/' + id);
+  let html = `<h3>${a.kind}:${a.id} ${esc(a.title)}</h3>`;
+  for (const v of a.versions.slice().reverse()) {
+    html += `<div class="card"><div class="meta">revision ${v.revision} by ${v.author} · ${v.created_at} · references ${linkify(v.refs)}
+      ${v.revision > 1 ? `<button onclick="diff(${a.id}, ${v.revision - 1}, ${v.revision})">diff vs ${v.revision - 1}</button>` : ''}</div><pre>${linkify(v.body)}</pre></div>`;
+  }
+  show(html);
+}
+async function diff(id, a, b) { const d = await api(`/api/artifacts/${id}/diff?a=${a}&b=${b}`); show(`<pre>${esc(d.diff)}</pre>`); }
+async function doSearch() {
+  const r = await api('/api/search?q=' + encodeURIComponent($('#sq').value));
+  $('#sr').innerHTML = r.map(h => `<div>${linkify(h.ref.replace('notes:', 'paper:'))} ${esc(h.title)} <span class="meta">${esc(h.snippet)}</span></div>`).join('');
+}
+async function loadConfig() { $('#ct').value = (await api('/api/file?path=' + encodeURIComponent($('#cf').value))).text; }
+async function saveConfig() {
+  await api('/api/config', {method: 'PUT', headers: {'content-type': 'application/json'}, body: JSON.stringify({path: $('#cf').value, text: $('#ct').value})});
+  alert('saved');
+}
+
+async function render() {
+  document.querySelectorAll('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.t === tab));
+  if (tab !== 'runs') await loadRuns();
+  $('#main').innerHTML = await views[tab]();
+  if (tab === 'config') loadConfig();
+}
+
+// Live updates: re-render the current view when new events arrive (not while editing config).
+let source;
+function connect() {
+source = new EventSource('/api/events/stream?after=' + (window.startEventId || 0));
+let pending = null;
+source.onmessage = (m) => {
+  window.lastEventId = Math.max(window.lastEventId || 0, JSON.parse(m.data).id);
+  if (tab === 'config' || $('#modal').style.display === 'block') return;
+  clearTimeout(pending);
+  pending = setTimeout(render, 500);
+};
+}
+api('/api/events?newest=1').then(e => { window.startEventId = e.length ? e[0].id : 0; connect(); });
+render();
+</script>
+</body>
+</html>

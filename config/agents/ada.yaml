@@ -1,0 +1,7 @@
+id: ada
+name: Ada
+model: local_qwen
+identity_prompt: config/prompts/ada.md
+papers_dir: data/papers/frontier_scaling
+workspace: agents/ada
+enabled: true

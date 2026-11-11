@@ -1,0 +1,7 @@
+id: ardor
+name: Ardor
+model: local_qwen
+identity_prompt: config/prompts/ardor.md
+papers_dir: data/papers/post_bayesian
+workspace: agents/ardor
+enabled: true

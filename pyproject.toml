@@ -1,0 +1,38 @@
+[project]
+name = "thebar"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "apscheduler>=3.11.3",
+    "fastapi>=0.162.4",
+    "httpx>=0.28.1",
+    "pydantic-ai-harness[coder]>=0.67.0",
+    "pydantic-ai-slim[duckduckgo,openai,web-fetch]>=2.67.0",
+    "pypdf>=7.0.1",
+    "pyyaml>=6.0.3",
+    "typer>=0.29.1",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+]
+
+[project.scripts]
+society = "thebar.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/thebar"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: needs Docker and the sandbox image; the real-model test also needs Ollama"]
+addopts = "-m 'not live'"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

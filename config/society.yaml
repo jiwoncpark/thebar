@@ -1,0 +1,19 @@
+question: >
+  How should we develop an automated judge of scientific hypotheses?
+
+activity:
+  interval_minutes: 30
+  jitter_minutes: 2
+  max_duration_minutes: 20
+  max_model_requests: 12
+  wake_cooldown_minutes: 10   # minimum gap before a message can wake an agent early
+
+sandbox:
+  enabled: true
+  image: thebar-sandbox:latest   # built from sandbox/Dockerfile
+  network_access: false
+  memory_limit: 1g
+  cpu_limit: 1
+  command_timeout_seconds: 300
+
+web_search: true   # DuckDuckGo search and page fetch, run by the app (not the sandbox)
