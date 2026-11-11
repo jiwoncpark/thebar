@@ -33,8 +33,10 @@ CREATE TABLE IF NOT EXISTS papers (
     id INTEGER PRIMARY KEY, path TEXT UNIQUE, collection TEXT, title TEXT, authors TEXT, year TEXT,
     arxiv_id TEXT, doi TEXT, url TEXT, sha256 TEXT UNIQUE, notes_path TEXT, added_by TEXT, created_at TEXT
 );
--- Reading state per agent: reading -> notes_pending -> completed.
-CREATE TABLE IF NOT EXISTS paper_reads (paper_id INTEGER, agent_id TEXT, status TEXT, PRIMARY KEY (paper_id, agent_id));
+-- Reading state per agent: notes_pending -> completed. last_page is the furthest page read.
+CREATE TABLE IF NOT EXISTS paper_reads (
+    paper_id INTEGER, agent_id TEXT, status TEXT, last_page INTEGER, PRIMARY KEY (paper_id, agent_id)
+);
 
 -- kind is 'insight' or 'proposal'. Each revision is kept in artifact_versions.
 CREATE TABLE IF NOT EXISTS artifacts (
@@ -79,6 +81,9 @@ class DB:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute('PRAGMA journal_mode=WAL')
         self.conn.executescript(SCHEMA)
+        # Databases created before last_page existed.
+        if 'last_page' not in [c['name'] for c in self.all('PRAGMA table_info(paper_reads)')]:
+            self.execute('ALTER TABLE paper_reads ADD COLUMN last_page INTEGER')
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         return self.conn.execute(sql, params)

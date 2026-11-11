@@ -1,5 +1,5 @@
 question: >
-  How should we develop an automated judge of scientific hypotheses?
+  How should we develop an automated judge of interestingness for open-ended scientific hypotheses, that is high-throughput and actionable/useful?
 
 activity:
   interval_minutes: 30

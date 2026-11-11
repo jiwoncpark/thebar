@@ -127,3 +127,20 @@ async def test_wake_respects_cooldown(root):
     from datetime import datetime
     assert (wake_at - datetime.fromisoformat(started)).total_seconds() >= 9 * 60
     await society.shutdown()
+
+
+async def test_reading_progress_is_reported_and_kept(root):
+    steps = [('read_paper', {'paper_id': 2, 'start_page': 1, 'num_pages': 20}), ('read_paper', {'paper_id': 2, 'start_page': 999})]
+    society, run_id = await make(root, {'ardor': steps, 'ada': []})
+    await society.run_activity(run_id, 'ardor', 'test')
+    first, second = [r['result'] for r in society.db.all('SELECT result FROM tool_calls ORDER BY id')]
+    total = int(first.split(' of ')[1].split()[0])
+    assert ', pages 1-' in first and f'of {total}' in first
+    last = society.db.one('SELECT last_page FROM paper_reads WHERE paper_id = 2')['last_page']
+    assert 1 <= last <= 5  # at most 5 pages per call, whole pages only
+    if last < total:
+        assert f'start_page={last + 1}' in first and 'Decide whether you have read enough' in first
+    assert f'has pages 1 to {total}' in second
+    prompt = society._activity_prompt(society.get_run(run_id), society.config.agents['ardor'])
+    assert f'read to page {last}' in prompt
+    await society.shutdown()

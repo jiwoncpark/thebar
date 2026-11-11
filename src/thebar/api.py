@@ -13,9 +13,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
-from thebar import tools
+from thebar import timeline, tools
 from thebar.db import now
-from thebar.society import Society
+from thebar.society import UPDATES_THREAD, Society
 
 ROOT = Path(os.environ.get('THEBAR_ROOT', Path(__file__).resolve().parents[2]))
 society: Society = None  # set in lifespan
@@ -149,6 +149,18 @@ def wake_agent(run_id: int, agent_id: str):
     return agent_status(run_id, agent_id)
 
 
+@app.get('/api/activities/{activity_id}')
+def activity(activity_id: int):
+    """One activity with its tool calls, for the detail view."""
+    act = society.db.one('SELECT * FROM activities WHERE id = ?', (activity_id,))
+    if not act:
+        raise HTTPException(404)
+    act['tool_calls'] = society.db.all('SELECT * FROM tool_calls WHERE activity_id = ? ORDER BY id', (activity_id,))
+    act['model_calls'] = society.db.one(
+        'SELECT COUNT(*) AS n, SUM(seconds) AS seconds, SUM(output_tokens) AS output_tokens FROM model_calls WHERE activity_id = ?', (activity_id,))
+    return act
+
+
 @app.post('/api/activities/{activity_id}/cancel')
 def cancel_activity(activity_id: int):
     society.cancel_activity(activity_id)
@@ -209,6 +221,12 @@ def thread(thread_id: int):
         'thread': society.db.one('SELECT * FROM threads WHERE id = ?', (thread_id,)),
         'messages': society.db.all('SELECT * FROM messages WHERE thread_id = ? ORDER BY id', (thread_id,)),
     }
+
+
+@app.get('/api/runs/{run_id}/timeline')
+def run_timeline(run_id: int):
+    run_or_404(run_id)
+    return {'agents': society.run_agents(run_id), **timeline.build(society.db, run_id, UPDATES_THREAD)}
 
 
 @app.get('/api/runs/{run_id}/dms')

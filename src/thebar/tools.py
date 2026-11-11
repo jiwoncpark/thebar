@@ -150,7 +150,8 @@ def search_messages(ctx: RunContext[Deps], query: str) -> list[dict]:
 @toolset.tool
 def list_papers(ctx: RunContext[Deps], collection: str | None = None) -> list[dict]:
     """List known papers. By default lists every collection; pass a collection directory to filter."""
-    sql = ('SELECT p.id, p.title, p.authors, p.year, p.collection, p.notes_path IS NOT NULL AS has_notes, r.status AS my_status '
+    sql = ('SELECT p.id, p.title, p.authors, p.year, p.collection, p.notes_path IS NOT NULL AS has_notes, r.status AS my_status, '
+           'r.last_page AS my_last_page '
            'FROM papers p LEFT JOIN paper_reads r ON r.paper_id = p.id AND r.agent_id = ?')
     params: tuple = (ctx.deps.agent.id,)
     if collection:
@@ -161,7 +162,10 @@ def list_papers(ctx: RunContext[Deps], collection: str | None = None) -> list[di
 
 @toolset.tool
 def read_paper(ctx: RunContext[Deps], paper_id: int, start_page: int = 1, num_pages: int = 3) -> str:
-    """Read a few pages of a paper. After reading, you must save notes with save_paper_notes before reading another paper."""
+    """Read up to 5 pages of a paper. Papers can be long: you decide whether to keep reading or stop.
+
+    Before reading a different paper, save notes on this one with save_paper_notes (you can revise them later).
+    """
     d = ctx.deps
     pending = d.db.one(
         "SELECT paper_id FROM paper_reads WHERE agent_id = ? AND status = 'notes_pending' AND paper_id != ?",
@@ -174,14 +178,29 @@ def read_paper(ctx: RunContext[Deps], paper_id: int, start_page: int = 1, num_pa
         raise ModelRetry(f'No paper {paper_id}. Use list_papers.')
     path = d.root / paper['path']
     total = papers.page_count(path)
-    num_pages = max(1, min(num_pages, 5))
-    text = papers.read_pages(path, start_page, num_pages)[:READ_CHARS]
-    status = d.db.one('SELECT status FROM paper_reads WHERE paper_id = ? AND agent_id = ?', (paper_id, d.agent.id))
-    if not status or status['status'] != 'completed':
-        d.db.execute("INSERT OR REPLACE INTO paper_reads VALUES (?, ?, 'notes_pending')", (paper_id, d.agent.id))
-    d.db.emit('paper_read', {'paper_id': paper_id, 'title': paper['title'], 'pages': [start_page, start_page + num_pages - 1]},
+    if not 1 <= start_page <= total:
+        raise ModelRetry(f'paper:{paper_id} has pages 1 to {total}.')
+    # Whole pages only, up to 5 pages and READ_CHARS characters (always at least one page).
+    text, shown = '', 0
+    for page in papers.read_pages(path, start_page, max(1, min(num_pages, 5))):
+        if shown and len(text) + len(page) > READ_CHARS:
+            break
+        text, shown = text + page + '\n\n', shown + 1
+    end = start_page + shown - 1
+    d.db.execute(
+        "INSERT INTO paper_reads (paper_id, agent_id, status, last_page) VALUES (?, ?, 'notes_pending', ?) "
+        'ON CONFLICT DO UPDATE SET last_page = MAX(COALESCE(last_page, 0), excluded.last_page)',
+        (paper_id, d.agent.id, end),
+    )
+    d.db.emit('paper_read', {'paper_id': paper_id, 'title': paper['title'], 'pages': [start_page, end], 'total': total},
               d.run_id, d.agent.id, d.activity_id)
-    return f'{paper["title"]} (paper:{paper_id}, {total} pages)\n\n{text}'
+    if end < total:
+        after = (f'You have read pages {start_page}-{end} of {total}. Decide whether you have read enough for your purposes. '
+                 f'To continue, call read_paper(paper_id={paper_id}, start_page={end + 1}). '
+                 'Otherwise save notes on what you read; you can revise them after reading more later.')
+    else:
+        after = 'This is the end of the paper.'
+    return f'{paper["title"]} (paper:{paper_id}), pages {start_page}-{end} of {total}\n\n{text[:READ_CHARS]}\n{after}'
 
 
 @toolset.tool
@@ -214,7 +233,8 @@ def save_paper_notes(
     notes.write_text(body)
     rel = str(notes.relative_to(d.root))
     d.db.execute('UPDATE papers SET notes_path = ? WHERE id = ?', (rel, paper_id))
-    d.db.execute("INSERT OR REPLACE INTO paper_reads VALUES (?, ?, 'completed')", (paper_id, d.agent.id))
+    d.db.execute("INSERT INTO paper_reads (paper_id, agent_id, status) VALUES (?, ?, 'completed') "
+                 "ON CONFLICT DO UPDATE SET status = 'completed'", (paper_id, d.agent.id))
     d.db.index(f'notes:{paper_id}', d.agent.id, paper['title'], body)
     d.db.emit('paper_notes', {'paper_id': paper_id, 'path': rel}, d.run_id, d.agent.id, d.activity_id)
     return f'Saved notes to {rel}.'

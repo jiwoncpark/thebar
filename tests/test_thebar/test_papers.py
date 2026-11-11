@@ -10,7 +10,7 @@ def test_index_is_idempotent(root):
     papers.index_collection(db, root, 'data/papers/post_bayesian')
     rows = db.all('SELECT * FROM papers')
     assert len(rows) == 1 and rows[0]['sha256']
-    assert 'page 1' in papers.read_pages(root / rows[0]['path'], 1, 1)
+    assert papers.read_pages(root / rows[0]['path'], 1, 1)[0].startswith('--- page 1 ---')
 
 
 def test_slug():

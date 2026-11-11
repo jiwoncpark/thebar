@@ -299,11 +299,13 @@ class Society:
             body = m['body'] if len(m['body']) < 1500 else m['body'][:1500] + ' ...(truncated; use read_reference)'
             lines.append(f'- message:{m["id"]} from {m["author"]} ({where}):\n{body}')
         pending = db.all(
-            "SELECT p.id, p.title FROM paper_reads r JOIN papers p ON p.id = r.paper_id WHERE r.agent_id = ? AND r.status = 'notes_pending'",
+            "SELECT p.id, p.title, r.last_page FROM paper_reads r JOIN papers p ON p.id = r.paper_id "
+            "WHERE r.agent_id = ? AND r.status = 'notes_pending'",
             (agent.id,),
         )
         my_papers = db.all(
-            'SELECT p.id, p.title, r.status FROM papers p LEFT JOIN paper_reads r ON r.paper_id = p.id AND r.agent_id = ? WHERE p.collection = ?',
+            'SELECT p.id, p.title, r.status, r.last_page FROM papers p LEFT JOIN paper_reads r ON r.paper_id = p.id AND r.agent_id = ? '
+            'WHERE p.collection = ?',
             (agent.id, agent.papers_dir),
         )
         others = [a for a in self.run_agents(run['id']) if a != agent.id]
@@ -313,10 +315,13 @@ class Society:
             f'## Your memory from previous sessions\n\n{memory}',
             '## New messages\n\n' + ('\n\n'.join(lines) if lines else '(none)'),
             '## Your paper collection (' + agent.papers_dir + ')\n\n'
-            + '\n'.join(f'- paper:{p["id"]} {p["title"]} [{p["status"] or "not read"}]' for p in my_papers),
+            + '\n'.join(f'- paper:{p["id"]} {p["title"]} [{p["status"] or "not read"}'
+                        + (f', read to page {p["last_page"]}' if p['last_page'] else '') + ']' for p in my_papers),
         ]
         if pending:
-            parts.append('You still owe notes for: ' + ', '.join(f'paper:{p["id"]} {p["title"]}' for p in pending))
+            parts.append('You started reading, without saving notes yet: ' + ', '.join(
+                f'paper:{p["id"]} {p["title"]} (read to page {p["last_page"]})' for p in pending)
+                + '. Continue reading or save notes; you need to save notes before starting a different paper.')
         parts.append('Decide what to do in this session, do it, then return your public update and memory.')
         return '\n\n'.join(parts)
 

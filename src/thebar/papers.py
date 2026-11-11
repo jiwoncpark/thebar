@@ -26,11 +26,11 @@ def page_count(path: Path) -> int:
     return len(PdfReader(path).pages)
 
 
-def read_pages(path: Path, start: int, count: int) -> str:
-    """Text of pages start..start+count-1 (1-based)."""
+def read_pages(path: Path, start: int, count: int) -> list[str]:
+    """Text of pages start..start+count-1 (1-based), one string per page."""
     reader = PdfReader(path)
     pages = reader.pages[start - 1 : start - 1 + count]
-    return '\n\n'.join(f'--- page {start + i} ---\n{p.extract_text() or ""}' for i, p in enumerate(pages))
+    return [f'--- page {start + i} ---\n{p.extract_text() or ""}' for i, p in enumerate(pages)]
 
 
 def add_paper(db: DB, path: Path, collection: str, root: Path, added_by: str | None = None, **meta) -> int:

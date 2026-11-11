@@ -18,11 +18,30 @@
   select, input, textarea { font: inherit; }
   textarea { width: 100%; height: 420px; font-family: ui-monospace, monospace; font-size: 13px; }
   .row { display: flex; gap: 12px; } .row > * { flex: 1; }
-  #modal { position: fixed; inset: 5% 10%; background: #fff; border: 1px solid #999; padding: 12px; overflow: auto; display: none; box-shadow: 0 4px 30px #0004; }
+  /* Popup sits above the timeline cards and headers; the shadow dims the page behind it. */
+  #modal { position: fixed; inset: 5% 10%; z-index: 100; background: #fff; border: 1px solid #999; padding: 12px; overflow: auto; display: none; box-shadow: 0 0 0 100vmax #0006, 0 4px 30px #0004; }
   .t-update, .t-post, .t-dm { border-left: 4px solid #2a7; }
   .t-tool_call, .t-tool_result { border-left: 4px solid #bbb; }
   .t-insight, .t-proposal, .t-experiment, .t-paper_notes { border-left: 4px solid #a5f; }
   .t-activity_ended { border-left: 4px solid #f90; }
+  /* Timeline: one column per agent, items ordered by time, lines for references. */
+  main.wide { max-width: none; }
+  #tl { position: relative; }
+  .tl-grid { display: grid; gap: 10px 28px; align-items: start; }
+  .tl-head { position: sticky; top: 0; z-index: 3; background: #fafafa; font-weight: 600; padding: 4px 0; border-bottom: 2px solid #ccc; }
+  .node { position: relative; z-index: 2; background: #fff; border: 1px solid #ddd; border-left: 5px solid var(--c); border-radius: 6px;
+          padding: 6px 8px; font-size: 12.5px; cursor: pointer; box-shadow: 0 1px 2px #0001; }
+  .node:hover, .node.lit { box-shadow: 0 0 0 2px var(--c); }
+  .node .kind { display: inline-block; background: var(--c); color: #fff; border-radius: 3px; padding: 0 5px; font-size: 11px; margin-right: 4px; }
+  .node .txt { color: #444; margin-top: 3px; max-height: 5.8em; overflow: hidden; white-space: pre-wrap; }
+  .node.k-activity { background: #f6f6f6; }
+  .chip { display: inline-block; font-size: 10.5px; background: #e8e8e8; border-radius: 8px; padding: 0 6px; margin: 2px 2px 0 0; }
+  #tlsvg { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 1; overflow: visible; }
+  #tlsvg .edge { fill: none; stroke-width: 1.6; opacity: .75; }
+  #tlsvg.focus .edge, #tlsvg.focus .band { opacity: .08; }
+  #tlsvg.focus .edge.on { opacity: 1; stroke-width: 2.6; }
+  .legend span { display: inline-block; margin-right: 12px; font-size: 12px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: var(--c); margin-right: 4px; }
 </style>
 </head>
 <body>
@@ -32,10 +51,10 @@
   <span>run: <select id="run"></select></span>
 </header>
 <main id="main"></main>
-<div id="modal"><button onclick="modal.style.display='none'">close</button><div id="modalBody"></div></div>
+<div id="modal"><button onclick="closeModal()">close</button> <button id="back" onclick="back()">← back</button><div id="modalBody"></div></div>
 <script>
-const TABS = ['runs', 'feed', 'boards', 'dms', 'agents', 'papers', 'artifacts', 'experiments', 'config', 'status'];
-let tab = location.hash.slice(1) || 'runs';
+const TABS = ['timeline', 'runs', 'feed', 'boards', 'dms', 'agents', 'papers', 'artifacts', 'experiments', 'config', 'status'];
+let tab = location.hash.slice(1) || 'timeline';
 let runId = null;
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -49,13 +68,31 @@ const api = async (path, opts) => {
   return body;
 };
 const post = (path, body) => api(path, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body || {})});
-const show = (html) => { $('#modalBody').innerHTML = html; $('#modal').style.display = 'block'; };
-async function openRef(ref) { const r = await api('/api/ref/' + ref); show(`<h3>${esc(ref)}</h3><pre>${linkify(r.text)}</pre>`); }
-async function openFile(path) { const r = await api('/api/file?path=' + encodeURIComponent(path)); show(`<h3>${esc(path)}</h3><pre>${linkify(r.text)}</pre>`); }
+// The popup keeps a history so you can click through (update → activity → paper → notes) and go back.
+let modalHistory = [];
+const show = (html) => {
+  if ($('#modal').style.display === 'block') modalHistory.push($('#modalBody').innerHTML);
+  $('#modalBody').innerHTML = html;
+  $('#modal').style.display = 'block';
+  $('#back').style.display = modalHistory.length ? '' : 'none';
+};
+function back() { $('#modalBody').innerHTML = modalHistory.pop(); $('#back').style.display = modalHistory.length ? '' : 'none'; }
+function closeModal() { $('#modal').style.display = 'none'; modalHistory = []; }
+document.addEventListener('keydown', (e) => e.key === 'Escape' && closeModal());
+async function openRef(ref, extra = '') {
+  const r = await api('/api/ref/' + ref);
+  const pdf = ref.startsWith('paper:') ? ` <a href="/api/papers/${ref.split(':')[1]}/pdf" target="_blank">open PDF</a>` : '';
+  show(`<h3>${esc(ref)}${pdf}</h3>${extra}<pre>${linkify(r.text)}</pre>`);
+}
+async function openFile(path, extra = '') {
+  const r = await api('/api/file?path=' + encodeURIComponent(path));
+  show(`<h3>${esc(path)}</h3>${extra}<pre>${linkify(r.text)}</pre>`);
+}
+const fileLink = (path) => `<span class="ref" onclick="openFile('${esc(path)}')">${esc(path)}</span>`;
 
 $('#tabs').innerHTML = TABS.map(t => `<a data-t="${t}">${t}</a>`).join(' ');
 $('#tabs').onclick = (e) => { if (e.target.dataset.t) { location.hash = e.target.dataset.t; } };
-window.onhashchange = () => { tab = location.hash.slice(1) || 'runs'; render(); };
+window.onhashchange = () => { tab = location.hash.slice(1) || 'timeline'; render(); };
 $('#run').onchange = () => { runId = +$('#run').value; render(); };
 
 async function loadRuns() {
@@ -66,6 +103,26 @@ async function loadRuns() {
 }
 
 const views = {
+  async timeline() {
+    if (!runId) return 'No run yet. Create one in the runs tab.';
+    const t = await api(`/api/runs/${runId}/timeline`);
+    TL = t;
+    const cols = ['literature', ...t.agents];
+    // Pack items into rows in time order. An item shares a row with the previous ones
+    // only if its column is still free in that row, so reading top to bottom follows time.
+    let row = 2, used = new Set();
+    const placed = t.nodes.map(n => {
+      const col = Math.max(0, cols.indexOf(n.agent)) + 1;
+      if (used.has(col)) { row++; used = new Set(); }
+      used.add(col);
+      return {n, row, col};
+    });
+    const legend = '<div class="legend">' + Object.entries(KIND).map(([k, c]) => `<span><i style="--c:${c}"></i>${k}</span>`).join('') +
+      '<span>── cites</span><span>- - reply / revision</span><span class="meta">hover a card to highlight its links; click to open</span></div>';
+    return legend + `<div id="tl"><svg id="tlsvg"></svg><div class="tl-grid" style="grid-template-columns: 200px repeat(${t.agents.length}, minmax(260px, 1fr))">` +
+      cols.map((c, i) => `<div class="tl-head" style="grid-row:1;grid-column:${i + 1}">${esc(c)}</div>`).join('') +
+      placed.map(({n, row, col}) => nodeCard(n, row, col)).join('') + '</div></div>';
+  },
   async runs() {
     const runs = await loadRuns();
     const control = (r, a) => `<button onclick="post('/api/runs/${r.id}/${a}').then(render)">${a}</button>`;
@@ -152,6 +209,143 @@ const views = {
   },
 };
 
+// ---- Timeline drawing ----
+const KIND = {activity: '#999', update: '#2a9d8f', post: '#3a86ff', dm: '#8338ec', paper: '#9c6644', notes: '#d4a017',
+              insight: '#f3722c', proposal: '#e63946', experiment: '#06a77d'};
+const STATUS = {running: '#3a86ff', completed: '#2a9d8f', failed: '#e63946', canceled: '#999', timed_out: '#f3722c', interrupted: '#999'};
+let TL = null;
+const hhmm = (iso) => new Date(iso).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+
+function nodeCard(n, row, col) {
+  const c = n.kind === 'activity' ? (STATUS[n.status] || '#999') : KIND[n.kind];
+  let body = '';
+  if (n.kind === 'activity') {
+    const mins = n.ended_at ? Math.round((new Date(n.ended_at) - new Date(n.time)) / 60000) + ' min' : 'working…';
+    body = `<div class="meta">${n.status} · ${n.trigger} · ${mins}</div>` +
+      (n.tools.length ? `<div>${n.tools.map(x => `<span class="chip">${esc(x)}</span>`).join('')}</div>` : '') +
+      (n.text ? `<div class="txt" style="color:#b00">${esc(n.text)}</div>` : '');
+  } else {
+    const extra = n.revision > 1 ? ` · revision ${n.revision}` : n.kind === 'experiment' ? ` · exit ${n.exit_code}` : '';
+    body = `<div class="txt">${linkify((n.text || '').slice(0, 400))}</div><div class="meta">${n.key.split('@')[0]}${extra}</div>`;
+  }
+  return `<div class="node k-${n.kind}" data-key="${esc(n.key)}" style="--c:${c};grid-row:${row};grid-column:${col}"
+    onclick="openNode('${esc(n.key)}')" onmouseenter="focusNode('${esc(n.key)}')" onmouseleave="focusNode(null)">
+    <span class="kind">${n.kind}</span><b>${esc(n.title || '')}</b> <span class="meta">${hhmm(n.time)}</span>${body}</div>`;
+}
+
+function openNode(key) {
+  const n = TL.nodes.find(x => x.key === key);
+  // Updates and activities open the activity that produced them; other items open the item itself.
+  if (n.kind === 'activity' || (n.kind === 'update' && n.activity)) return openActivity(n.activity);
+  const from = n.activity ? `<p class="meta">made by ${esc(n.agent)} in <span class="ref" onclick="openActivity(${n.activity})">activity #${n.activity}</span></p>` : '';
+  if (n.kind === 'notes') openFile(n.path, from);
+  else openRef(key, from);
+}
+
+// One line per tool call, saying what it did, with links to what it read or made.
+function describeCall(c) {
+  let a = {};
+  try { a = JSON.parse(c.args || '{}'); } catch (e) {}
+  const r = c.result || '';
+  const firstLine = r.split('\n')[0];
+  switch (c.tool) {
+    case 'read_paper': {
+      const from = a.start_page || 1, to = from + Math.min(5, Math.max(1, a.num_pages || 3)) - 1;  // read_paper returns at most 5 pages
+      return `Read ${linkify('paper:' + a.paper_id)} <i>${esc(firstLine.replace(/\s*\(paper:\d+.*$/, ''))}</i>, pages ${from}–${to}`;
+    }
+    case 'save_paper_notes': {
+      const m = r.match(/Saved notes to (.+)\.$/);
+      return `Saved notes on ${linkify('paper:' + a.paper_id)}` + (m ? ` → ${fileLink(m[1])}` : ` <span style="color:#b00">${esc(firstLine)}</span>`);
+    }
+    case 'create_thread': return `Started thread <b>${esc(a.title)}</b>: ${linkify(r)}<div class="txt">${linkify(a.body)}</div>`;
+    case 'post_reply': return `Replied in thread ${a.thread_id}: ${linkify(r)}<div class="txt">${linkify(a.body)}</div>`;
+    case 'send_dm': return `DM to <b>${esc(a.to)}</b>: ${linkify(r)}<div class="txt">${linkify(a.body)}</div>`;
+    case 'save_insight': case 'write_proposal': return `${c.tool === 'save_insight' ? 'Saved insight' : 'Wrote proposal'} <b>${esc(a.title)}</b>: ${linkify(r)}`;
+    case 'record_experiment': return `Ran experiment in ${esc(a.directory)}: ${linkify(firstLine)}<div class="txt">${esc(a.hypothesis)}</div>`;
+    case 'search_papers': return `Searched arXiv for <b>${esc(a.query)}</b>`;
+    case 'download_paper': return `Downloaded ${esc(a.arxiv_id || a.pdf_url)}: ${linkify(r)}`;
+    case 'read_reference': return `Looked up ${linkify(a.ref || '')}`;
+    case 'shell': return `Ran <code>${esc(a.command)}</code>`;
+    case 'write_file': case 'edit_file': case 'read_file': return `${c.tool.replace('_', ' ')} <code>${esc(a.path || a.file_path || '')}</code>`;
+    default: return `${esc(c.tool)} <code>${esc(JSON.stringify(a).slice(0, 160))}</code>`;
+  }
+}
+
+async function openActivity(id) {
+  const a = await api('/api/activities/' + id);
+  const made = (TL?.nodes || []).filter(n => n.activity === id && n.kind !== 'activity' && n.kind !== 'update');
+  const mc = a.model_calls;
+  show(`<h3>Activity #${a.id} · ${esc(a.agent_id)}</h3>
+    <p class="meta">${a.status} · trigger ${a.trigger} · ${a.started_at} → ${a.ended_at || 'running'} · ${mc.n} model calls, ${Math.round(mc.seconds || 0)} s, ${mc.output_tokens || 0} output tokens · prompt ${a.prompt_hash}</p>
+    ${a.error ? `<p style="color:#b00">${esc(a.error)}</p>` : ''}
+    <h4>Public update</h4><div class="card t-update"><pre>${linkify(a.public_update || '(none)')}</pre></div>
+    <h4>Produced</h4>${made.map(n => `<div class="chip" style="cursor:pointer" onclick="openNode('${esc(n.key)}')">${n.kind}: ${esc(n.title || n.key)}</div>`).join(' ') || '<span class="meta">nothing saved</span>'}
+    <h4>What it did</h4>` +
+    a.tool_calls.map((c, i) => `<div class="card t-tool_call"><span class="meta">${i + 1}. ${hhmm(c.started_at)}</span> ${describeCall(c)}
+      <details><summary class="meta">arguments and result</summary><pre>${esc(c.args)}</pre><pre>${linkify(c.result || '(no result)')}</pre></details></div>`).join(''));
+}
+
+function focusNode(key) {
+  const svg = $('#tlsvg');
+  if (!svg) return;
+  svg.classList.toggle('focus', !!key);
+  document.querySelectorAll('.node.lit').forEach(el => el.classList.remove('lit'));
+  svg.querySelectorAll('.edge').forEach(p => {
+    const on = key && (p.dataset.from === key || p.dataset.to === key);
+    p.classList.toggle('on', !!on);
+    if (on) [p.dataset.from, p.dataset.to].forEach(k => document.querySelector(`.node[data-key="${CSS.escape(k)}"]`)?.classList.add('lit'));
+  });
+}
+
+function drawLinks() {
+  const box = $('#tl'), svg = $('#tlsvg');
+  if (!box || !TL) return;
+  const B = box.getBoundingClientRect();
+  svg.setAttribute('width', box.scrollWidth);
+  svg.setAttribute('height', box.scrollHeight);
+  const rect = (k) => {
+    const el = box.querySelector(`.node[data-key="${CSS.escape(k)}"]`);
+    if (!el) return null;
+    const q = el.getBoundingClientRect();
+    return {x: q.left - B.left, y: q.top - B.top, w: q.width, h: q.height};
+  };
+  let out = '<defs>' + Object.entries({...KIND, grey: '#888'}).map(([k, c]) =>
+    `<marker id="m-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${c}"/></marker>`).join('') + '</defs>';
+
+  // Activity bars: a strip left of each agent column, from the activity card to the last item it produced.
+  for (const a of TL.nodes.filter(n => n.kind === 'activity')) {
+    const r0 = rect(a.key);
+    if (!r0) continue;
+    const end = a.ended_at || '9999';
+    const inside = TL.nodes.filter(n => n.agent === a.agent && n.kind !== 'activity' && n.time >= a.time && n.time <= end).map(n => rect(n.key)).filter(Boolean);
+    const bottom = Math.max(r0.y + r0.h, ...inside.map(r => r.y + r.h));
+    out += `<rect class="band" x="${r0.x - 9}" y="${r0.y}" width="4" height="${bottom - r0.y}" rx="2" fill="${STATUS[a.status] || '#999'}"/>`;
+  }
+
+  for (const e of TL.edges) {
+    const a = rect(e.from), b = rect(e.to);
+    if (!a || !b) continue;
+    const target = TL.nodes.find(n => n.key === e.to);
+    const color = e.type === 'ref' ? KIND[target.kind] : '#888';
+    const marker = e.type === 'ref' ? target.kind : 'grey';
+    let d;
+    if (Math.abs(a.x - b.x) < 5) {
+      // Same column: loop out to the right side of the cards.
+      const x = a.x + a.w, bend = 30 + Math.min(80, (a.y - b.y) / 12);
+      d = `M${x},${a.y + 14} C${x + bend},${a.y + 14} ${x + bend},${b.y + b.h - 10} ${x},${b.y + b.h - 10}`;
+    } else {
+      const left = b.x < a.x;
+      const x1 = left ? a.x : a.x + a.w, x2 = left ? b.x + b.w : b.x;
+      const y1 = a.y + 14, y2 = b.y + Math.min(b.h / 2, 20), mid = (x1 + x2) / 2;
+      d = `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`;
+    }
+    out += `<path class="edge" data-from="${esc(e.from)}" data-to="${esc(e.to)}" d="${d}" stroke="${color}"
+      ${e.type === 'ref' ? '' : 'stroke-dasharray="5 4"'} marker-end="url(#m-${marker})"/>`;
+  }
+  svg.innerHTML = out;
+}
+window.addEventListener('resize', () => tab === 'timeline' && drawLinks());
+
 function summarize(e) {
   const p = e.payload;
   switch (e.type) {
@@ -192,7 +386,9 @@ async function saveConfig() {
 async function render() {
   document.querySelectorAll('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.t === tab));
   if (tab !== 'runs') await loadRuns();
+  $('#main').classList.toggle('wide', tab === 'timeline');
   $('#main').innerHTML = await views[tab]();
+  if (tab === 'timeline') drawLinks();
   if (tab === 'config') loadConfig();
 }
 
