@@ -14,11 +14,11 @@ async def test_nodes_and_edges(root):
     steps = [
         ('read_paper', {'paper_id': 1}),
         ('save_paper_notes', {'paper_id': 1, **NOTES}),
-        ('save_insight', {'title': 'Calibration', 'body': 'Builds on paper:1.', 'references': []}),
+        ('save_insight', {'title': 'Calibration', 'body': '## Summary\n' + 'Builds on paper:1.', 'references': []}),
         ('create_thread', {'title': 'Judges', 'body': 'See insight:1'}),
         ('post_reply', {'thread_id': 2, 'body': 'I disagree.'}),
-        ('write_proposal', {'title': 'P', 'body': 'v1', 'references': ['insight:1']}),
-        ('write_proposal', {'title': 'P', 'body': 'v2', 'references': [], 'proposal_id': 2, 'base_revision': 1}),
+        ('write_proposal', {'title': 'P', 'body': '## Summary\n' + 'v1', 'references': ['insight:1']}),
+        ('write_proposal', {'title': 'P', 'body': '## Summary\n' + 'v2', 'references': [], 'proposal_id': 2, 'base_revision': 1}),
     ]
     society = Society(root, model=scripted_model({'ada': steps, 'ardor': []}))
     await society.start()

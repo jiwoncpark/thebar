@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import time
 from collections.abc import AsyncIterator
@@ -28,7 +29,7 @@ from pydantic_ai_harness.step_persistence import StepPersistence
 
 from thebar.config import AgentConfig
 from thebar.db import now
-from thebar.tools import Deps, toolset
+from thebar.tools import SHARED_TOOLS, Deps, toolset
 
 if TYPE_CHECKING:
     from thebar.society import Society
@@ -111,8 +112,9 @@ def model_settings(cfg: dict) -> dict:
     return settings
 
 
-def container_name(activity_id: int) -> str:
-    return f'thebar-activity-{activity_id}'
+def project_label(root: Path) -> str:
+    """Identifies this project's containers, so a second copy of the app (e.g. tests) never removes ours."""
+    return hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:8]
 
 
 def build_agent(society: Society, agent: AgentConfig, activity_id: int, instructions: str, model: Model | None = None) -> Agent:
@@ -133,11 +135,14 @@ def build_agent(society: Society, agent: AgentConfig, activity_id: int, instruct
                 allow_internet_access=sb['network_access'],
                 env={'HOME': '/workspace/scratch', 'MPLCONFIGDIR': '/workspace/scratch/.matplotlib'},
                 docker_args=[
-                    '--name', container_name(activity_id), '--label', 'thebar=1',
+                    '--label', f'thebar={project_label(society.config.root)}', '--label', f'thebar.activity={activity_id}',
                     '--memory', str(sb['memory_limit']), '--cpus', str(sb['cpu_limit']), '--pids-limit', '256',
                     '--user', '1000:1000', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                     '--volume', f'{workspace / "scratch"}:/workspace/scratch',
                     '--volume', f'{workspace / "tools"}:/workspace/tools',
+                    '--volume', f'{(society.config.root / SHARED_TOOLS).resolve()}:/workspace/shared_tools',
+                    # Recorded experiments, read-only, so manuscripts can include any agent's plots.
+                    '--volume', f'{(society.config.root / "artifacts/experiments").resolve()}:/workspace/experiments:ro',
                 ],
             ),
             Coder(sub_agents=False, repo_context=False),
@@ -158,22 +163,21 @@ def build_agent(society: Society, agent: AgentConfig, activity_id: int, instruct
     )
 
 
-async def remove_container(activity_id: int) -> None:
-    proc = await asyncio.create_subprocess_exec(
-        'docker', 'rm', '-f', container_name(activity_id),
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-    )
-    await proc.wait()
+async def remove_container(root: Path, activity_id: int) -> None:
+    await _remove(f'label=thebar={project_label(root)}', f'label=thebar.activity={activity_id}')
 
 
-async def remove_all_containers() -> None:
-    """Remove sandbox containers left over from a previous process."""
-    proc = await asyncio.create_subprocess_exec(
-        'docker', 'ps', '-aq', '--filter', 'label=thebar=1', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-    )
+async def remove_all_containers(root: Path) -> None:
+    """Remove this project's sandbox containers left over from a previous process."""
+    await _remove(f'label=thebar={project_label(root)}')
+
+
+async def _remove(*filters: str) -> None:
+    """Remove the containers matching all the given docker label filters."""
+    args = [a for f in filters for a in ('--filter', f)]
+    proc = await asyncio.create_subprocess_exec('docker', 'ps', '-aq', *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     out, _ = await proc.communicate()
-    ids = out.decode().split()
-    if ids:
+    if ids := out.decode().split():
         rm = await asyncio.create_subprocess_exec('docker', 'rm', '-f', *ids, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         await rm.wait()
 
@@ -181,3 +185,5 @@ async def remove_all_containers() -> None:
 def ensure_workspace(root: Path, agent: AgentConfig) -> None:
     for sub in ('memory', 'scratch', 'tools'):
         (root / agent.workspace / sub).mkdir(parents=True, exist_ok=True)
+    (root / SHARED_TOOLS).mkdir(parents=True, exist_ok=True)
+    (root / 'artifacts/experiments').mkdir(parents=True, exist_ok=True)

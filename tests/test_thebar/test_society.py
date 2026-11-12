@@ -52,15 +52,16 @@ async def test_paper_notes_are_required(root):
 
 async def test_proposal_revision_needs_current_revision(root):
     steps = [
-        ('write_proposal', {'title': 'Calibrated judge', 'body': 'v1', 'references': ['paper:1']}),
-        ('write_proposal', {'title': 'Calibrated judge', 'body': 'v2', 'references': [], 'proposal_id': 1, 'base_revision': 1}),
-        ('write_proposal', {'title': 'Calibrated judge', 'body': 'stale', 'references': [], 'proposal_id': 1, 'base_revision': 1}),
-        ('write_proposal', {'title': 'Fork', 'body': 'f', 'references': ['proposal:1@2'], 'fork_of': 1}),
+        ('write_proposal', {'title': 'Calibrated judge', 'body': 'v0', 'references': []}),  # refused: no plain summary
+        ('write_proposal', {'title': 'Calibrated judge', 'body': '## Summary\n' + 'v1', 'references': ['paper:1']}),
+        ('write_proposal', {'title': 'Calibrated judge', 'body': '## Summary\n' + 'v2', 'references': [], 'proposal_id': 1, 'base_revision': 1}),
+        ('write_proposal', {'title': 'Calibrated judge', 'body': '## Summary\n' + 'stale', 'references': [], 'proposal_id': 1, 'base_revision': 1}),
+        ('write_proposal', {'title': 'Fork', 'body': '## Summary\n' + 'f', 'references': ['proposal:1@2'], 'fork_of': 1}),
     ]
     society, run_id = await make(root, {'ada': steps, 'ardor': []})
     await society.run_activity(run_id, 'ada', 'test')
     versions = society.db.all('SELECT artifact_id, revision, body FROM artifact_versions ORDER BY artifact_id, revision')
-    assert [(v['artifact_id'], v['revision'], v['body']) for v in versions] == [(1, 1, 'v1'), (1, 2, 'v2'), (2, 1, 'f')]
+    assert [(v['artifact_id'], v['revision'], v['body']) for v in versions] == [(1, 1, '## Summary\nv1'), (1, 2, '## Summary\nv2'), (2, 1, '## Summary\nf')]
     assert 'revision: 2' in (root / 'proposals/calibrated_judge.md').read_text()
     assert society.db.one('SELECT forked_from FROM artifacts WHERE id = 2')['forked_from'] == 1
     await society.shutdown()

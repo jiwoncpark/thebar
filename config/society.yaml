@@ -12,7 +12,7 @@ activity:
 sandbox:
   enabled: true
   image: thebar-sandbox:latest   # built from sandbox/Dockerfile
-  network_access: false
+  network_access: true    # agents' code can download data and call APIs; the container holds no keys
   memory_limit: 1g
   cpu_limit: 1
   command_timeout_seconds: 300

@@ -6,6 +6,7 @@ These run in the app (not the sandbox) and validate their inputs.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from thebar.society import Society
 
 READ_CHARS = 12_000
+SHARED_TOOLS = 'agents/shared_tools'  # scripts any agent can use; mounted in every sandbox as shared_tools/
 toolset: FunctionToolset[Deps] = FunctionToolset()
 
 
@@ -279,17 +281,27 @@ async def download_paper(ctx: RunContext[Deps], arxiv_id: str | None = None, pdf
 
 # ---- Insights and proposals ----
 
+SUMMARY_HEADING = '## Summary'
+
+
 def _save_artifact(ctx, kind, title, body, references, artifact_id=None, base_revision=None, fork_of=None) -> str:
     d = ctx.deps
+    if kind != 'manuscript' and not body.lstrip().startswith(SUMMARY_HEADING):
+        raise ModelRetry(
+            f'Start the body with "{SUMMARY_HEADING}": 2-4 sentences in plain words, with no symbols or acronyms, that a '
+            'researcher outside this project understands without reading anything else: the claim, the main evidence, '
+            'and why it matters for the research question.'
+        )
     refs = json.dumps(references)
     done = d.db.one('SELECT artifact_id, revision FROM artifact_versions WHERE idem = ?', (d.idem(ctx),))
     if done:
         return f'Saved {kind}:{done["artifact_id"]} revision {done["revision"]}.'
     if artifact_id is None:
-        folder = f'artifacts/insights/{d.agent.id}' if kind == 'insight' else 'proposals'
-        path = f'{folder}/{papers.slug(title)}.md'
+        folder = {'insight': f'artifacts/insights/{d.agent.id}', 'proposal': 'proposals', 'manuscript': 'artifacts/manuscripts'}[kind]
+        suffix = '' if kind == 'manuscript' else '.md'  # a manuscript is a folder with paper.tex, refs.bib, and paper.pdf
+        path = f'{folder}/{papers.slug(title)}{suffix}'
         if d.db.one('SELECT id FROM artifacts WHERE path = ?', (path,)):
-            path = f'{folder}/{papers.slug(title)}_{d.agent.id}_{d.activity_id}.md'
+            path = f'{folder}/{papers.slug(title)}_{d.agent.id}_{d.activity_id}{suffix}'
         artifact_id = d.db.insert(
             'INSERT INTO artifacts (kind, author, title, path, revision, forked_from, run_id, created_at) VALUES (?,?,?,?,0,?,?,?)',
             (kind, d.agent.id, title, path, fork_of, d.run_id, now()),
@@ -310,10 +322,11 @@ def _save_artifact(ctx, kind, title, body, references, artifact_id=None, base_re
               'updated_at': now(), 'references': references}
     if art['forked_from']:
         header['forked_from'] = f'{kind}:{art["forked_from"]}'
-    text = f'---\n{yaml.safe_dump(header, sort_keys=False)}---\n\n{body}\n'
-    path = d.root / art['path']
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    if kind != 'manuscript':  # write_manuscript copies the manuscript's folder itself
+        text = f'---\n{yaml.safe_dump(header, sort_keys=False)}---\n\n{body}\n'
+        path = d.root / art['path']
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
     d.db.execute('INSERT INTO artifact_versions VALUES (?,?,?,?,?,?,?)', (artifact_id, revision, d.agent.id, body, refs, now(), d.idem(ctx)))
     d.db.execute('UPDATE artifacts SET revision = ?, title = ? WHERE id = ?', (revision, title, artifact_id))
     d.db.index(f'{kind}:{artifact_id}', d.agent.id, title, body)
@@ -327,8 +340,10 @@ def save_insight(ctx: RunContext[Deps], title: str, body: str, references: list[
     """Save an insight: a general claim about the research question, such as a hypothesis, connection, criticism,
     finding, negative result, or new question, that a researcher outside this project would find worth knowing.
 
-    The title states the general claim, not the result of one experiment. The body should cover the claim,
-    motivation, evidence (cite experiments and papers), uncertainty, limitations, and implications.
+    The title states the general claim in plain words, not the result of one experiment. The body starts with
+    "## Summary": 2-4 plain sentences, no symbols or acronyms, readable without anything else. Then cover the claim,
+    motivation, evidence (cite experiments and papers), uncertainty, limitations, and implications, defining any
+    symbol you use.
     references: e.g. ["paper:2", "message:7"], or [] for a new conjecture.
     To update one of your insights, pass insight_id and its current revision as base_revision.
     """
@@ -340,7 +355,8 @@ def write_proposal(ctx: RunContext[Deps], title: str, body: str, references: lis
                    base_revision: int | None = None, fork_of: int | None = None) -> str:
     """Create, revise, or fork a research proposal. Any agent may revise any proposal.
 
-    The body should have these sections: Research question, Motivation, Hypothesis or proposed method,
+    The body starts with "## Summary": 2-4 plain sentences, no symbols or acronyms, readable without anything else.
+    Then these sections: Research question, Motivation, Hypothesis or proposed method,
     Computational experiment, Dataset / simulation environment, Baselines, Evaluation metrics,
     What would falsify the hypothesis?, Expected implications, Limitations and open questions.
     To revise, pass proposal_id and its current revision as base_revision. To fork, pass fork_of.
@@ -350,7 +366,7 @@ def write_proposal(ctx: RunContext[Deps], title: str, body: str, references: lis
 
 @toolset.tool
 def list_artifacts(ctx: RunContext[Deps], kind: str | None = None) -> list[dict]:
-    """List insights and proposals (kind='insight' or 'proposal' to filter)."""
+    """List insights, proposals, and manuscripts (kind='insight', 'proposal', or 'manuscript' to filter)."""
     sql = 'SELECT kind, id, title, author, revision FROM artifacts'
     return ctx.deps.db.all(sql + (' WHERE kind = ?' if kind else '') + ' ORDER BY id DESC LIMIT 40', (kind,) if kind else ())
 
@@ -378,7 +394,7 @@ def resolve(society: Society, ref: str, viewer: str | None = None) -> str:
             raise KeyError(f'No {ref}.')
         notes = (root / p['notes_path']).read_text() if p['notes_path'] else '(no notes yet)'
         return f'{p["title"]}\n{p["authors"]} {p["year"]} arXiv:{p["arxiv_id"]} doi:{p["doi"]}\n{p["path"]}\n\n{notes}'
-    if kind in ('insight', 'proposal'):
+    if kind in ('insight', 'proposal', 'manuscript'):
         a = db.one('SELECT * FROM artifacts WHERE id = ? AND kind = ?', (i, kind))
         if not a:
             raise KeyError(f'No {ref}.')
@@ -443,11 +459,22 @@ async def fetch_openalex_works(
 
 # ---- Experiments and tools ----
 
+def _scratch_folder(d: Deps, directory: str) -> tuple[Path, str]:
+    """A folder under the agent's scratch/, as a host path and as a path relative to scratch/."""
+    host_scratch = (d.root / d.agent.workspace / 'scratch').resolve()
+    rel = directory.strip('/').removeprefix('workspace/').removeprefix('scratch/').strip('/')
+    host_dir = (host_scratch / rel).resolve()
+    if not host_dir.is_relative_to(host_scratch) or not host_dir.is_dir():
+        raise ModelRetry(f'Not a folder under scratch/: {directory}')
+    return host_dir, rel
+
+
 @toolset.tool
 async def record_experiment(ctx: RunContext[Deps], directory: str, hypothesis: str, references: list[str]) -> str:
     """Run and record a computational experiment.
 
     directory: a folder under scratch/ in your sandbox containing run.py (and optionally requirements.txt).
+    hypothesis: what the experiment tests, in plain words that someone outside this project understands.
     run.py is executed in the sandbox and must write results.json. Each plot it saves (e.g. plot.png) needs a caption
     in a .txt file of the same name (plot.txt). The code, results, plots, and output are then saved as a permanent
     experiment record.
@@ -456,10 +483,8 @@ async def record_experiment(ctx: RunContext[Deps], directory: str, hypothesis: s
     done = d.db.one('SELECT id FROM experiments WHERE idem = ?', (d.idem(ctx),))
     if done:
         return f'Recorded experiment:{done["id"]}.'
-    host_scratch = (d.root / d.agent.workspace / 'scratch').resolve()
-    rel = directory.strip('/').removeprefix('workspace/').removeprefix('scratch/').strip('/')
-    host_dir = (host_scratch / rel).resolve()
-    if not host_dir.is_relative_to(host_scratch) or not (host_dir / 'run.py').exists():
+    host_dir, rel = _scratch_folder(d, directory)
+    if not (host_dir / 'run.py').exists():
         raise ModelRetry(f'Put run.py in a folder under scratch/, e.g. scratch/exp1/run.py. Not found: {directory}')
     if not d.society.config.society['sandbox']['enabled']:
         raise ModelRetry('The sandbox is disabled, so experiments cannot be run.')
@@ -497,8 +522,61 @@ async def record_experiment(ctx: RunContext[Deps], directory: str, hypothesis: s
 
 
 @toolset.tool
-def list_my_tools(ctx: RunContext[Deps]) -> list[dict]:
-    """List the reusable scripts in your tools/ folder with their first line (description)."""
-    folder = ctx.deps.root / ctx.deps.agent.workspace / 'tools'
-    return [{'path': f'tools/{p.relative_to(folder)}', 'description': (p.read_text(errors='replace').splitlines() or [''])[0][:200]}
-            for p in sorted(folder.rglob('*')) if p.is_file()]
+def list_tools(ctx: RunContext[Deps]) -> list[dict]:
+    """List reusable scripts: your own (tools/) and those any agent shared (shared_tools/), with their first line."""
+    found = []
+    for folder, name in [(ctx.deps.root / ctx.deps.agent.workspace / 'tools', 'tools'), (ctx.deps.root / SHARED_TOOLS, 'shared_tools')]:
+        if folder.exists():
+            found += [{'path': f'{name}/{p.relative_to(folder)}', 'description': (p.read_text(errors='replace').splitlines() or [''])[0][:200]}
+                      for p in sorted(folder.rglob('*')) if p.is_file()]
+    return found
+
+
+# ---- Manuscripts ----
+
+@toolset.tool
+async def write_manuscript(ctx: RunContext[Deps], directory: str, proposal_id: int, references: list[str],
+                           manuscript_id: int | None = None, base_revision: int | None = None) -> str:
+    """Write or revise a short paper, in LaTeX, on a proposal whose main hypothesis has been tested by recorded experiments.
+
+    directory: a folder under scratch/ with paper.tex, refs.bib, and the figures paper.tex includes. Cite with
+    \\citep{key} or \\citet{key} using keys from refs.bib, and end with \\bibliography{refs}. The folder is compiled
+    with tectonic in your sandbox and saved, with paper.pdf, as manuscript:<id>.
+    references: the experiments, insights, and papers it relies on, with at least one experiment, e.g. ["experiment:12"].
+    To revise a manuscript (any agent may), pass manuscript_id and its current revision as base_revision.
+    """
+    d = ctx.deps
+    done = d.db.one('SELECT artifact_id, revision FROM artifact_versions WHERE idem = ?', (d.idem(ctx),))
+    if done:
+        return f'Saved manuscript:{done["artifact_id"]} revision {done["revision"]}.'
+    host_dir, rel = _scratch_folder(d, directory)
+    if not (host_dir / 'paper.tex').exists() or not (host_dir / 'refs.bib').exists():
+        raise ModelRetry(f'Put paper.tex and refs.bib in scratch/{rel}.')
+    if not d.db.one("SELECT id FROM artifacts WHERE id = ? AND kind = 'proposal'", (proposal_id,)):
+        raise ModelRetry(f'No proposal:{proposal_id}.')
+    experiments = [r for r in references if r.startswith('experiment:')]
+    if not experiments or any(not d.db.one('SELECT id FROM experiments WHERE id = ?', (r.split(':')[1],)) for r in experiments):
+        raise ModelRetry('references must include the recorded experiments the manuscript reports, e.g. ["experiment:12"].')
+    tex = (host_dir / 'paper.tex').read_text()
+    title = re.search(r'\\title\{(.+?)\}', tex, re.S)
+    if not title:
+        raise ModelRetry('paper.tex needs a \\title{...}.')
+    if '\\cite' not in tex:
+        raise ModelRetry('Cite your sources with \\citep{key} or \\citet{key}, using entries in refs.bib.')
+    if not d.society.config.society['sandbox']['enabled']:
+        raise ModelRetry('The sandbox is disabled, so manuscripts cannot be compiled.')
+    (host_dir / 'paper.pdf').unlink(missing_ok=True)
+    timeout = d.society.config.society['sandbox']['command_timeout_seconds']
+    result = await ctx.workspace.run(f'cd scratch/{rel} && tectonic --keep-logs paper.tex', shell=True, timeout=timeout)
+    if not (host_dir / 'paper.pdf').exists():
+        raise ModelRetry(f'paper.tex did not compile (exit code {result.exit_code}).\n{(result.stdout + result.stderr)[-3000:]}')
+    log = (host_dir / 'paper.log').read_text(errors='replace') if (host_dir / 'paper.log').exists() else ''
+    undefined = sorted(set(re.findall(r"Citation `([^']+)'[^\n]*undefined", log)))
+    if undefined:
+        raise ModelRetry(f'These citations are not in refs.bib: {", ".join(undefined)}. Add entries for them, with real bibliographic details.')
+    message = _save_artifact(ctx, 'manuscript', ' '.join(title.group(1).split()), tex,
+                             references + [f'proposal:{proposal_id}'], manuscript_id, base_revision)
+    art = d.db.one('SELECT a.id, a.path FROM artifacts a JOIN artifact_versions v ON v.artifact_id = a.id WHERE v.idem = ?', (d.idem(ctx),))
+    dest = d.root / art['path']
+    shutil.copytree(host_dir, dest, dirs_exist_ok=True, ignore=lambda _, names: [n for n in names if n.startswith('.')])
+    return f'{message} PDF: {art["path"]}/paper.pdf'

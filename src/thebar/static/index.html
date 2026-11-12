@@ -59,7 +59,7 @@ let runId = null;
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // Escape text and make references like paper:3 or proposal:2@1 clickable.
-const linkify = (s) => esc(s).replace(/\b(paper|insight|proposal|message|experiment):(\d+)(@\d+)?/g,
+const linkify = (s) => esc(s).replace(/\b(paper|insight|proposal|manuscript|message|experiment):(\d+)(@\d+)?/g,
   (m) => `<span class="ref" onclick="openRef('${m}')">${m}</span>`);
 const api = async (path, opts) => {
   const r = await fetch(path, opts);
@@ -81,7 +81,8 @@ function closeModal() { $('#modal').style.display = 'none'; modalHistory = []; }
 document.addEventListener('keydown', (e) => e.key === 'Escape' && closeModal());
 async function openRef(ref, extra = '') {
   const r = await api('/api/ref/' + ref);
-  const pdf = ref.startsWith('paper:') ? ` <a href="/api/papers/${ref.split(':')[1]}/pdf" target="_blank">open PDF</a>` : '';
+  const pdf = ref.startsWith('paper:') ? ` <a href="/api/papers/${ref.split(':')[1]}/pdf" target="_blank">open PDF</a>`
+    : r.pdf ? ` <a href="${fileUrl(r.pdf)}" target="_blank">open PDF</a>` : '';
   show(`<h3>${esc(ref)}${pdf}</h3>${extra}${plots(r.images)}<pre>${linkify(r.text)}</pre>`);
 }
 const isImage = (path) => /\.(png|jpe?g|svg)$/i.test(path);
@@ -193,7 +194,7 @@ const views = {
     const arts = await api('/api/artifacts');
     return arts.map(a => `<div class="card"><b>${linkify(a.kind + ':' + a.id)}</b> ${esc(a.title)}
       <div class="meta">by ${a.author} · revision ${a.revision} ${a.forked_from ? '· forked from ' + a.kind + ':' + a.forked_from : ''} · ${a.path}</div>
-      <button onclick="openArtifact(${a.id})">history</button></div>`).join('') || 'No insights or proposals yet.';
+      <button onclick="openArtifact(${a.id})">history</button>${a.kind === 'manuscript' ? ` <a href="${fileUrl(a.path + '/paper.pdf')}" target="_blank">open PDF</a>` : ''}</div>`).join('') || 'No insights, proposals, or manuscripts yet.';
   },
   async experiments() {
     const exps = await api('/api/experiments');
@@ -219,7 +220,7 @@ const views = {
 
 // ---- Timeline drawing ----
 const KIND = {activity: '#999', update: '#2a9d8f', post: '#3a86ff', dm: '#8338ec', paper: '#9c6644', notes: '#d4a017',
-              insight: '#f3722c', proposal: '#e63946', experiment: '#06a77d'};
+              insight: '#f3722c', proposal: '#e63946', manuscript: '#1d3557', experiment: '#06a77d'};
 const STATUS = {running: '#3a86ff', completed: '#2a9d8f', failed: '#e63946', canceled: '#999', timed_out: '#f3722c', interrupted: '#999'};
 let TL = null;
 const hhmm = (iso) => new Date(iso).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
@@ -269,6 +270,10 @@ function describeCall(c) {
     case 'create_thread': return `Started thread <b>${esc(a.title)}</b>: ${linkify(r)}<div class="txt">${linkify(a.body)}</div>`;
     case 'post_reply': return `Replied in thread ${a.thread_id}: ${linkify(r)}<div class="txt">${linkify(a.body)}</div>`;
     case 'send_dm': return `DM to <b>${esc(a.to)}</b>: ${linkify(r)}<div class="txt">${linkify(a.body)}</div>`;
+    case 'write_manuscript': {
+      const m = r.match(/PDF: (\S+)$/);
+      return `Wrote manuscript on ${linkify('proposal:' + a.proposal_id)}: ${linkify(firstLine)}` + (m ? ` <a href="${fileUrl(m[1])}" target="_blank">open PDF</a>` : '');
+    }
     case 'save_insight': case 'write_proposal': return `${c.tool === 'save_insight' ? 'Saved insight' : 'Wrote proposal'} <b>${esc(a.title)}</b>: ${linkify(r)}`;
     case 'record_experiment': return `Ran experiment in ${esc(a.directory)}: ${linkify(firstLine)}<div class="txt">${esc(a.hypothesis)}</div>`;
     case 'search_papers': return `Searched arXiv for <b>${esc(a.query)}</b>`;

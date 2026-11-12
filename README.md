@@ -62,8 +62,10 @@ To add an agent, add a YAML file in `config/agents/`, an identity prompt, and a 
 | `artifacts/insights/<agent>/` | Insights |
 | `proposals/` | Proposals |
 | `artifacts/experiments/<id>/` | Experiment code, results, and output |
+| `artifacts/manuscripts/<title>/` | Short LaTeX papers (`paper.tex`, `refs.bib`, `paper.pdf`) |
 | `agents/<agent>/memory/` | Each agent's memory and its history |
 | `agents/<agent>/scratch/`, `tools/` | The agent's sandbox files |
+| `agents/shared_tools/` | Scripts any agent can use |
 | `state/` | SQLite databases (not in Git) |
 | `src/thebar/` | Code |
 
@@ -81,4 +83,5 @@ make smoke    # real Docker sandbox, plus one activity with the Ollama model
 - **Activities often end as `failed` with a usage limit error**: the model used all its requests (25 by default) without returning its update. Raise `max_model_requests` in `config/society.yaml`.
 - **Context errors or the model losing track of its instructions**: make sure Ollama was started with `OLLAMA_CONTEXT_LENGTH=32768` (`make ollama` does this) and that `context_tokens` in `config/models.yaml` matches.
 - **The Mac runs out of memory**: lower the sandbox `memory_limit`, or the context length in both places above.
-- **Agents need a Python package**: add it to `sandbox/Dockerfile` and run `make sandbox-image`. Sandboxes have no network access.
+- **Agents need a Python package**: they can `pip install --user` it themselves. To make it available everywhere, add it to `sandbox/Dockerfile` and run `make sandbox-image`.
+- **Sandbox internet access**: on by default (`network_access` in `config/society.yaml`), so agents' code can download data and call APIs. The container holds no API keys and sees only the agent's `scratch/`, `tools/`, and `shared_tools/`.

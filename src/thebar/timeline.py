@@ -12,7 +12,7 @@ from pathlib import Path
 
 from thebar.db import DB
 
-REF_RE = re.compile(r'\b(paper|insight|proposal|message|experiment):(\d+)(?:@(\d+))?')
+REF_RE = re.compile(r'\b(paper|insight|proposal|manuscript|message|experiment):(\d+)(?:@(\d+))?')
 LITERATURE = 'literature'
 
 
@@ -111,7 +111,7 @@ def build(db: DB, run_id: int, updates_thread: str, root: Path | None = None) ->
     keys = {n['key'] for n in nodes}
     latest: dict[str, str] = {}
     for n in nodes:
-        if n['kind'] in ('insight', 'proposal'):
+        if n['kind'] in ('insight', 'proposal', 'manuscript'):
             latest[n['key'].split('@')[0]] = n['key']
     edges, seen = [], set()
     for key, ref, type in links:

@@ -69,7 +69,7 @@ class Society:
     async def _remove_containers(self) -> None:
         if self.config.society['sandbox']['enabled']:
             try:
-                await remove_all_containers()
+                await remove_all_containers(self.config.root)
             except FileNotFoundError:
                 pass
 
@@ -283,7 +283,7 @@ class Society:
         finally:
             del self.active[activity_id]
             if self.config.society['sandbox']['enabled']:
-                await remove_container(activity_id)  # also ends any background jobs the agent started
+                await remove_container(self.config.root, activity_id)  # also ends any background jobs the agent started
             self.db.execute('UPDATE activities SET status = ?, ended_at = ?, error = ? WHERE id = ?', (status, now(), error, activity_id))
             self.db.emit('activity_ended', {'status': status, 'error': error}, run_id, agent_id, activity_id)
         return activity_id

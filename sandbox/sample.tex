@@ -1,0 +1,16 @@
+% Compiled once while building the image so common LaTeX packages are cached.
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,graphicx,booktabs,hyperref,xcolor,caption,subcaption}
+\usepackage[numbers]{natbib}
+\title{Sample}
+\author{Sandbox}
+\begin{document}
+\maketitle
+\begin{abstract}A sample.\end{abstract}
+\section{Introduction}
+A citation \citep{sample}.
+\begin{table}[h]\centering\begin{tabular}{lr}\toprule a & 1\\\bottomrule\end{tabular}\caption{A table.}\end{table}
+\bibliographystyle{plainnat}
+\bibliography{sample}
+\end{document}

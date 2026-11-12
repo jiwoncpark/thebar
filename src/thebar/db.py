@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -78,6 +79,9 @@ class DB:
         if str(path) != ':memory:':
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+        # Tools run in worker threads and share this connection. The lock keeps each statement and its
+        # result together, so an insert from another thread cannot change the row id we read back.
+        self.lock = threading.RLock()
         self.conn.row_factory = sqlite3.Row
         self.conn.execute('PRAGMA journal_mode=WAL')
         self.conn.executescript(SCHEMA)
@@ -85,18 +89,22 @@ class DB:
         if 'last_page' not in [c['name'] for c in self.all('PRAGMA table_info(paper_reads)')]:
             self.execute('ALTER TABLE paper_reads ADD COLUMN last_page INTEGER')
 
-    def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        return self.conn.execute(sql, params)
+    def execute(self, sql: str, params: tuple = ()) -> None:
+        with self.lock:
+            self.conn.execute(sql, params)
 
     def insert(self, sql: str, params: tuple = ()) -> int:
-        return self.conn.execute(sql, params).lastrowid
+        with self.lock:
+            return self.conn.execute(sql, params).lastrowid
 
     def one(self, sql: str, params: tuple = ()) -> dict | None:
-        row = self.conn.execute(sql, params).fetchone()
+        with self.lock:
+            row = self.conn.execute(sql, params).fetchone()
         return dict(row) if row else None
 
     def all(self, sql: str, params: tuple = ()) -> list[dict]:
-        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+        with self.lock:
+            return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
 
     def emit(self, type: str, payload: dict, run_id=None, agent_id=None, activity_id=None) -> int:
         """Record an event. The web UI reads events from this table."""

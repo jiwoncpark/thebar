@@ -259,7 +259,11 @@ def resolve_ref(ref: str):
     if ref.startswith('experiment:'):
         row = society.db.one('SELECT path FROM experiments WHERE id = ?', (ref.split(':')[1],))
         images = timeline.experiment_images(ROOT, row['path'])
-    return {'ref': ref, 'text': text, 'images': images}
+    pdf = None
+    if ref.startswith('manuscript:'):
+        row = society.db.one('SELECT path FROM artifacts WHERE id = ?', (ref.split(':')[1].split('@')[0],))
+        pdf = f'{row["path"]}/paper.pdf' if (ROOT / row['path'] / 'paper.pdf').exists() else None
+    return {'ref': ref, 'text': text, 'images': images, 'pdf': pdf}
 
 
 # ---- Agents, papers, artifacts, experiments, tools ----
