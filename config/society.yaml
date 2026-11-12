@@ -1,12 +1,13 @@
 question: >
-  How should we develop an automated judge of interestingness for open-ended scientific hypotheses, that is high-throughput and actionable/useful?
+  How should we develop an automated judge of interestingness for scientific hypotheses in open-ended discovery, that is actionable/useful, without relying on an explicitly specified objective of interestingness?
 
 activity:
-  interval_minutes: 30
+  interval_minutes: 30         # use about 60 with the local model: its activities run one at a time
   jitter_minutes: 2
-  max_duration_minutes: 20
-  max_model_requests: 12
+  max_duration_minutes: 20     # time limit once the activity has its turn on the model (about 45 for the local model)
+  max_model_requests: 25
   wake_cooldown_minutes: 10   # minimum gap before a message can wake an agent early
+  field_reading_every: 4      # every Nth activity, the agent reads a paper from its own field and reflects (0 = never)
 
 sandbox:
   enabled: true
@@ -16,4 +17,4 @@ sandbox:
   cpu_limit: 1
   command_timeout_seconds: 300
 
-web_search: true   # DuckDuckGo search and page fetch, run by the app (not the sandbox)
+web_search: true   # web search (Bing, Google, Yahoo, DuckDuckGo via ddgs) and page fetch, run by the app (not the sandbox)

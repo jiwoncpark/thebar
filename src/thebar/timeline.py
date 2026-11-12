@@ -8,6 +8,7 @@ an earlier node it refers to.
 
 import json
 import re
+from pathlib import Path
 
 from thebar.db import DB
 
@@ -25,7 +26,18 @@ def refs_in(*texts: str) -> list[str]:
     return [m.group(0) for t in texts if t for m in REF_RE.finditer(t)]
 
 
-def build(db: DB, run_id: int, updates_thread: str) -> dict:
+IMAGE_SUFFIXES = ('.png', '.jpg', '.jpeg', '.svg')
+
+
+def experiment_images(root: Path, path: str | None) -> list[dict]:
+    """Plots saved in an experiment folder, each with its caption (the .txt file of the same name, if any)."""
+    folder = root / path if path else None
+    if not folder or not folder.exists():
+        return []
+    return [{'path': f'{path}/{f.name}', 'caption': f.with_suffix('.txt').read_text() if f.with_suffix('.txt').exists() else ''}
+            for f in sorted(folder.iterdir()) if f.suffix.lower() in IMAGE_SUFFIXES]
+
+def build(db: DB, run_id: int, updates_thread: str, root: Path | None = None) -> dict:
     nodes: list[dict] = []
     links: list[tuple[str, str, str]] = []  # (from key, ref, type); refs resolved to node keys below
 
@@ -67,8 +79,9 @@ def build(db: DB, run_id: int, updates_thread: str) -> dict:
 
     for e in db.all('SELECT * FROM experiments WHERE run_id = ? ORDER BY id', (run_id,)):
         key = f'experiment:{e["id"]}'
+        images = experiment_images(root, e['path']) if root else []
         node(key, e['author'], e['created_at'], 'experiment', f'Experiment #{e["id"]}', e['hypothesis'], exit_code=e['exit_code'],
-             activity=e['activity_id'])
+             activity=e['activity_id'], images=images)
         links += [(key, r, 'ref') for r in json.loads(e['refs'] or '[]')]
 
     for e in db.all("SELECT * FROM events WHERE run_id = ? AND type = 'paper_notes' ORDER BY id", (run_id,)):

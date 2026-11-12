@@ -2,8 +2,8 @@ from scripted import scripted_model
 from thebar import timeline
 from thebar.society import UPDATES_THREAD, Society
 
-NOTES = {'citation': 'c', 'research_question': 'q', 'main_contribution': 'm', 'method_and_assumptions': 'a', 'results': 'r',
-         'critical_assessment': 'x', 'connection_to_our_question': 'y', 'connections_to_other_work': 'z'}
+NOTES = {'notes': '## Citation\nc\n## Research question\nq\n## Main contribution\nm\n## Method and assumptions\na\n'
+                  '## Results\nr\n## Critical assessment\nx\n## Connection to our research question\ny\n## Connections to other work\nz'}
 
 
 def test_refs_in():
@@ -44,3 +44,16 @@ async def test_nodes_and_edges(root):
     time = {n['key']: n['time'] for n in t['nodes']}
     assert all(time[e['to']] <= time[e['from']] for e in t['edges'])
     await society.shutdown()
+
+
+def test_experiment_images_include_captions(tmp_path):
+    folder = tmp_path / 'artifacts/experiments/1'
+    folder.mkdir(parents=True)
+    (folder / 'gap.png').write_bytes(b'png')
+    (folder / 'gap.txt').write_text('What the gap means.')
+    (folder / 'raw.png').write_bytes(b'png')
+    (folder / 'results.json').write_text('{}')
+    assert timeline.experiment_images(tmp_path, 'artifacts/experiments/1') == [
+        {'path': 'artifacts/experiments/1/gap.png', 'caption': 'What the gap means.'},
+        {'path': 'artifacts/experiments/1/raw.png', 'caption': ''},
+    ]

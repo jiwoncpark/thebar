@@ -8,7 +8,9 @@ Terms:
 
 import asyncio
 import json
+import os
 import random
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -128,10 +130,25 @@ class Society:
         self._unschedule_run(run_id)
         tasks = [t for r, _, t in self.active.values() if r == run_id]
         for t in tasks:
-            t.cancel()  # also removes queued model requests: a task waiting for the model lock stops waiting
+            t.cancel()  # also stops activities waiting for their turn on a local model
         if tasks:
             await asyncio.wait(tasks, timeout=30)
         self._set_status(run_id, 'stopped', ended_at=now())
+
+    def add_agent(self, run_id: int, agent_id: str) -> None:
+        """Add an agent from config/agents/ to an existing run. It sees the run's history from its first activity."""
+        self.config.load()
+        if agent_id not in self.config.agents:
+            raise ValueError(f'No agent {agent_id!r} in config/agents/.')
+        if agent_id in self.run_agents(run_id):
+            return
+        agent = self.config.agents[agent_id]
+        ensure_workspace(self.config.root, agent)
+        papers.index_collection(self.db, self.config.root, agent.papers_dir)
+        self.db.execute('INSERT INTO run_agents (run_id, agent_id) VALUES (?,?)', (run_id, agent_id))
+        self.db.emit('agent_added', {}, run_id, agent_id)
+        if self.get_run(run_id)['status'] == 'running':
+            self._add_job(run_id, agent_id, delay=5)
 
     def pause_agent(self, run_id: int, agent_id: str) -> None:
         self.db.execute('UPDATE run_agents SET paused = 1 WHERE run_id = ? AND agent_id = ?', (run_id, agent_id))
@@ -152,7 +169,11 @@ class Society:
         """Make sure each Ollama model the run uses is installed. Never switches models."""
         for agent_id in self.run_agents(run_id):
             cfg = self.config.models[self.config.agents[agent_id].model]
-            if cfg['provider'] != 'ollama' or self.model is not None:
+            if self.model is not None:
+                continue
+            if cfg.get('api_key_env') and not os.environ.get(cfg['api_key_env']):
+                raise RuntimeError(f'{agent_id} uses {cfg["model"]}, which needs the {cfg["api_key_env"]} environment variable.')
+            if cfg['provider'] != 'ollama':
                 continue
             base = cfg['base_url'].removesuffix('/v1')
             try:
@@ -236,19 +257,23 @@ class Society:
         self.db.emit('activity_started', {'trigger': trigger, 'prompt_hash': prompt_hash}, run_id, agent_id, activity_id)
         current_activity.set((activity_id, agent_id))
         status, error = 'completed', None
+        # A local model runs one whole activity at a time, so each activity keeps the model's prompt cache to itself.
+        # Waiting for a turn does not count toward the activity's time limit.
+        local = self.model is not None or self.config.models[agent.model]['provider'] == 'ollama'
         try:
-            prompt = self._activity_prompt(run, agent)
-            ai = build_agent(self, agent, activity_id, instructions, self.model)
-            limits = self.config.society['activity']
-            result = await asyncio.wait_for(
-                ai.run(
-                    prompt, deps=Deps(self, run_id, agent, activity_id),
-                    usage_limits=UsageLimits(request_limit=limits['max_model_requests']),
-                    event_stream_handler=self._log_tools(run_id, agent_id, activity_id),
-                ),
-                timeout=limits['max_duration_minutes'] * 60,
-            )
-            self._finish(run_id, agent, activity_id, result.output)
+            async with self.inference_lock if local else nullcontext():
+                prompt = self._activity_prompt(run, agent)
+                ai = build_agent(self, agent, activity_id, instructions, self.model)
+                limits = self.config.society['activity']
+                result = await asyncio.wait_for(
+                    ai.run(
+                        prompt, deps=Deps(self, run_id, agent, activity_id),
+                        usage_limits=UsageLimits(request_limit=limits['max_model_requests']),
+                        event_stream_handler=self._log_tools(run_id, agent_id, activity_id),
+                    ),
+                    timeout=limits['max_duration_minutes'] * 60,
+                )
+                self._finish(run_id, agent, activity_id, result.output)
         except asyncio.CancelledError:
             status, error = 'canceled', 'canceled'
         except TimeoutError:
@@ -322,6 +347,11 @@ class Society:
             parts.append('You started reading, without saving notes yet: ' + ', '.join(
                 f'paper:{p["id"]} {p["title"]} (read to page {p["last_page"]})' for p in pending)
                 + '. Continue reading or save notes; you need to save notes before starting a different paper.')
+        every = self.config.society['activity'].get('field_reading_every', 0)
+        done = db.one("SELECT COUNT(*) AS n FROM activities WHERE run_id = ? AND agent_id = ? AND status = 'completed'",
+                      (run['id'], agent.id))['n']
+        if every and done % every == every - 1:
+            parts.append((self.config.root / 'config/prompts/field_reading.md').read_text())
         parts.append('Decide what to do in this session, do it, then return your public update and memory.')
         return '\n\n'.join(parts)
 

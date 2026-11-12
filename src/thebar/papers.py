@@ -41,17 +41,18 @@ def add_paper(db: DB, path: Path, collection: str, root: Path, added_by: str | N
         return existing['id']
     reader = PdfReader(path)
     info = reader.metadata or {}
+    field = lambda key: str(info[key].get_object()) if info.get(key) is not None else ''  # values can be references
     first = (reader.pages[0].extract_text() or '') if reader.pages else ''
     arxiv = ARXIV_RE.search(first)
     doi = DOI_RE.search(first)
-    title = meta.get('title') or (info.get('/Title') or '').strip() or path.stem
+    title = meta.get('title') or field('/Title').strip() or path.stem
     paper_id = db.insert(
         'INSERT INTO papers (path, collection, title, authors, year, arxiv_id, doi, url, sha256, added_by, created_at) '
         'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
         (
             str(path.relative_to(root)), collection, title,
-            meta.get('authors') or (info.get('/Author') or ''),
-            meta.get('year') or (info.get('/CreationDate') or '')[2:6],
+            meta.get('authors') or field('/Author'),
+            meta.get('year') or field('/CreationDate')[2:6],
             meta.get('arxiv_id') or (arxiv.group(1) if arxiv else None),
             doi.group(1) if doi else None, meta.get('url'), sha, added_by, now(),
         ),

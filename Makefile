@@ -15,4 +15,4 @@ sandbox-image:  ## Build the image agents' code runs in
 	docker build -t thebar-sandbox:latest sandbox
 
 ollama:  ## Start Ollama with the context length set in config/models.yaml
-	OLLAMA_CONTEXT_LENGTH=16384 ollama serve
+	OLLAMA_CONTEXT_LENGTH=32768 OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 ollama serve

@@ -1,0 +1,7 @@
+id: thea
+name: Thea
+model: claude_sonnet
+identity_prompt: config/prompts/thea.md
+papers_dir: data/papers/philosophy_of_science
+workspace: agents/thea
+enabled: true

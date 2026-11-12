@@ -3,14 +3,28 @@ models:
     provider: ollama
     model: qwen3.5:9b
     base_url: http://localhost:11434/v1
-    context_tokens: 16384   # must match OLLAMA_CONTEXT_LENGTH used to start Ollama
+    context_tokens: 32768   # must match OLLAMA_CONTEXT_LENGTH used to start Ollama (make ollama)
     temperature: 0.7
 
-  # Example API model. Set an agent's `model:` to this name to use it.
+  claude_sonnet:
+    provider: anthropic
+    model: claude-sonnet-5-5
+    api_key_env: ANTHROPIC_API_KEY
+    context_tokens: 64000   # older messages are dropped past ~60% of this, to bound cost per request
+    effort: high            # low | medium | high | xhigh | max
+
+  claude_haiku:
+    provider: anthropic
+    model: claude-haiku-5-5
+    api_key_env: ANTHROPIC_API_KEY
+    context_tokens: 64000
+    effort: medium
+
+  # Any OpenAI-compatible API.
   api_example:
     provider: openai
     model: gpt-5-mini
     api_key_env: OPENAI_API_KEY
     context_tokens: 128000
 
-default: local_qwen
+default: claude_sonnet

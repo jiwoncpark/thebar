@@ -11,12 +11,15 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ddgs import DDGS
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
+from pydantic_ai import Agent, Tool
 from pydantic_ai.capabilities import WebFetch, WebSearch
 from pydantic_ai.models import Model
+from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.wrapper import WrapperModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.ollama import OllamaProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai_harness import Coder, DockerSandbox
@@ -42,17 +45,24 @@ class ActivityResult(BaseModel):
 def build_model(cfg: dict) -> Model:
     if cfg['provider'] == 'ollama':
         return OpenAIChatModel(cfg['model'], provider=OllamaProvider(base_url=cfg['base_url']))
+    if cfg['provider'] == 'anthropic':
+        return AnthropicModel(cfg['model'], provider=AnthropicProvider(api_key=os.environ.get(cfg.get('api_key_env', 'ANTHROPIC_API_KEY'))))
     if cfg['provider'] == 'openai':
         return OpenAIChatModel(cfg['model'], provider=OpenAIProvider(api_key=os.environ.get(cfg['api_key_env']), base_url=cfg.get('base_url')))
     raise ValueError(f'Unknown provider {cfg["provider"]!r}')
 
 
-class QueuedModel(WrapperModel):
-    """Lets one model request run at a time across all agents, and logs each request.
+async def web_search(query: str) -> list[dict] | str:
+    """Searches the web for the given query and returns the results."""
+    try:
+        # 'auto' tries several engines (Bing, Google, Yahoo, DuckDuckGo, ...), so one engine blocking us does not stop search.
+        return await asyncio.to_thread(DDGS().text, query, max_results=8, backend='auto')
+    except Exception as e:  # e.g. no results, or rate limited; tell the agent instead of ending the activity
+        return f'Search failed: {e}. Try other words, or search arXiv with search_papers.'
 
-    asyncio.Lock serves waiters in arrival order, and each agent has at most one waiting
-    request, so agents take turns.
-    """
+
+class LoggedModel(WrapperModel):
+    """Logs each model request to the model_calls table."""
 
     def __init__(self, wrapped: Model, society: Society):
         super().__init__(wrapped)
@@ -67,27 +77,38 @@ class QueuedModel(WrapperModel):
         )
 
     async def request(self, *args, **kwargs):
-        async with self.society.inference_lock:
-            started = time.monotonic()
-            try:
-                response = await self.wrapped.request(*args, **kwargs)
-            except BaseException:
-                self._log(started, False)
-                raise
-            self._log(started, True, response.usage)
-            return response
+        started = time.monotonic()
+        try:
+            response = await self.wrapped.request(*args, **kwargs)
+        except BaseException:
+            self._log(started, False)
+            raise
+        self._log(started, True, response.usage)
+        return response
 
     @asynccontextmanager
     async def request_stream(self, *args, **kwargs) -> AsyncIterator:
-        async with self.society.inference_lock:
-            started = time.monotonic()
-            ok = False
-            try:
-                async with self.wrapped.request_stream(*args, **kwargs) as stream:
-                    yield stream
-                ok = True
-            finally:
-                self._log(started, ok, stream.usage if ok else None)
+        started = time.monotonic()
+        ok = False
+        try:
+            async with self.wrapped.request_stream(*args, **kwargs) as stream:
+                yield stream
+            ok = True
+        finally:
+            self._log(started, ok, stream.usage if ok else None)
+
+
+def model_settings(cfg: dict) -> dict:
+    settings = {'temperature': cfg['temperature']} if 'temperature' in cfg else {}
+    if cfg['provider'] == 'anthropic':
+        settings |= {
+            'anthropic_cache': True,  # cache the growing conversation between requests
+            'anthropic_effort': cfg.get('effort', 'medium'),
+            # If the model declines a request, the API retries it on another model instead of stopping.
+            'anthropic_betas': ['server-side-fallback-2026-07-01'],
+            'extra_body': {'fallbacks': 'default'},
+        }
+    return settings
 
 
 def container_name(activity_id: int) -> str:
@@ -122,16 +143,18 @@ def build_agent(society: Society, agent: AgentConfig, activity_id: int, instruct
             Coder(sub_agents=False, repo_context=False),
         ]
     if s.get('web_search'):
-        capabilities += [WebSearch(local=True), WebFetch(local=True)]
+        # Search run by the app (several engines via ddgs), not the provider's own, so every search is logged and visible in the UI.
+        capabilities += [WebSearch(native=False, local=Tool(web_search)), WebFetch(native=False, local=True)]
     return Agent(
-        QueuedModel(model or build_model(model_cfg), society),
+        LoggedModel(model or build_model(model_cfg), society),
         name=agent.id,
         instructions=instructions,
         deps_type=Deps,
         output_type=ActivityResult,
         toolsets=[toolset],
+        retries=3,  # how many times a tool can reject a call before the activity fails
         capabilities=capabilities,
-        model_settings={'temperature': model_cfg.get('temperature', 0.7)},
+        model_settings=model_settings(model_cfg),
     )
 
 

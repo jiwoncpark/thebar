@@ -11,13 +11,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import httpx
 import yaml
 from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.toolsets import FunctionToolset
 
-from thebar import papers
+from thebar import openalex, papers
 from thebar.config import AgentConfig
 from thebar.db import now
+from thebar.timeline import IMAGE_SUFFIXES
 
 if TYPE_CHECKING:
     from thebar.society import Society
@@ -203,32 +205,26 @@ def read_paper(ctx: RunContext[Deps], paper_id: int, start_page: int = 1, num_pa
     return f'{paper["title"]} (paper:{paper_id}), pages {start_page}-{end} of {total}\n\n{text[:READ_CHARS]}\n{after}'
 
 
+NOTE_SECTIONS = ['Citation', 'Research question', 'Main contribution', 'Method and assumptions', 'Results',
+                 'Critical assessment', 'Connection to our research question', 'Connections to other work']
+
+
 @toolset.tool
-def save_paper_notes(
-    ctx: RunContext[Deps],
-    paper_id: int,
-    citation: str,
-    research_question: str,
-    main_contribution: str,
-    method_and_assumptions: str,
-    results: str,
-    critical_assessment: str,
-    connection_to_our_question: str,
-    connections_to_other_work: str,
-) -> str:
-    """Save reading notes for a paper (replacing earlier notes). Include page or section numbers where you can."""
+def save_paper_notes(ctx: RunContext[Deps], paper_id: int, notes: str) -> str:
+    """Save reading notes for a paper (replacing earlier notes). Include page or section numbers where you can.
+
+    `notes` is markdown with these level-2 headings, in order: ## Citation, ## Research question,
+    ## Main contribution, ## Method and assumptions, ## Results, ## Critical assessment,
+    ## Connection to our research question, ## Connections to other work.
+    """
     d = ctx.deps
     paper = d.db.one('SELECT * FROM papers WHERE id = ?', (paper_id,))
     if not paper:
         raise ModelRetry(f'No paper {paper_id}.')
-    sections = {
-        'Citation': citation, 'Research question': research_question, 'Main contribution': main_contribution,
-        'Method and assumptions': method_and_assumptions, 'Results': results,
-        'Critical assessment': critical_assessment, 'Connection to our research question': connection_to_our_question,
-        'Connections to other work': connections_to_other_work,
-    }
-    body = f'# Notes: {paper["title"]}\n\npaper:{paper_id} · written by {d.agent.id} · {now()}\n\n'
-    body += '\n\n'.join(f'## {k}\n\n{v}' for k, v in sections.items()) + '\n'
+    missing = [h for h in NOTE_SECTIONS if f'## {h}'.lower() not in notes.lower()]
+    if missing:
+        raise ModelRetry('Notes are missing these headings: ' + ', '.join(f'## {h}' for h in missing))
+    body = f'# Notes: {paper["title"]}\n\npaper:{paper_id} · written by {d.agent.id} · {now()}\n\n{notes.strip()}\n'
     notes = d.root / paper['collection'] / f'notes_{papers.slug(paper["title"])}.md'
     notes.write_text(body)
     rel = str(notes.relative_to(d.root))
@@ -328,9 +324,11 @@ def _save_artifact(ctx, kind, title, body, references, artifact_id=None, base_re
 @toolset.tool
 def save_insight(ctx: RunContext[Deps], title: str, body: str, references: list[str], insight_id: int | None = None,
                  base_revision: int | None = None) -> str:
-    """Save an insight worth keeping: a hypothesis, connection, criticism, finding, negative result, or new question.
+    """Save an insight: a general claim about the research question, such as a hypothesis, connection, criticism,
+    finding, negative result, or new question, that a researcher outside this project would find worth knowing.
 
-    The body should cover the claim, motivation, evidence, uncertainty, limitations, and implications.
+    The title states the general claim, not the result of one experiment. The body should cover the claim,
+    motivation, evidence (cite experiments and papers), uncertainty, limitations, and implications.
     references: e.g. ["paper:2", "message:7"], or [] for a new conjecture.
     To update one of your insights, pass insight_id and its current revision as base_revision.
     """
@@ -403,6 +401,46 @@ def resolve(society: Society, ref: str, viewer: str | None = None) -> str:
     raise ValueError(f'Unknown reference type in {ref!r}.')
 
 
+# ---- Data ----
+
+@toolset.tool
+async def fetch_openalex_works(
+    ctx: RunContext[Deps],
+    save_as: str,
+    search: str | None = None,
+    filter: str | None = None,
+    sort: str | None = None,
+    max_results: int = 200,
+) -> str:
+    """Download scholarly works from OpenAlex into your sandbox as a JSON Lines file, for experiments.
+
+    Each row has: id, doi, title, year, date, type, venue, field, subfield, topic, n_authors,
+    n_references, cited_by_count, citations_by_year ({year: count}, about the last 10 years), abstract.
+    The file is written to scratch/data/<save_as>.jsonl, where your sandbox code can read it.
+
+    search: full-text search, e.g. "hypothesis generation".
+    filter: OpenAlex filter syntax, comma-separated, e.g. "publication_year:2019,type:article,primary_topic.field.id:17"
+        (field ids: 17 Computer Science, 26 Mathematics, 13 Biochemistry, 31 Physics, 27 Medicine),
+        or "cited_by_count:>10", "from_publication_date:2018-01-01".
+    sort: e.g. "cited_by_count:desc" or "publication_date:asc". Without a sort, results are by relevance or id.
+    max_results: up to 2000.
+    """
+    d = ctx.deps
+    name = papers.slug(save_as)
+    try:
+        rows, total = await openalex.fetch_works(search, filter, sort, max(1, min(max_results, openalex.MAX_WORKS)))
+    except (ValueError, httpx.HTTPError) as e:
+        raise ModelRetry(f'OpenAlex request failed: {e}')
+    folder = d.root / d.agent.workspace / 'scratch' / 'data'
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f'{name}.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
+    d.db.emit('data_fetched', {'source': 'openalex', 'search': search, 'filter': filter, 'rows': len(rows),
+                               'path': f'scratch/data/{name}.jsonl'}, d.run_id, d.agent.id, d.activity_id)
+    sample = '\n'.join(f'- {r["year"]} | {r["cited_by_count"]} citations | {r["title"]}' for r in rows[:5])
+    return (f'Saved {len(rows)} of {total} matching works to scratch/data/{name}.jsonl.\n'
+            f'First rows:\n{sample}')
+
+
 # ---- Experiments and tools ----
 
 @toolset.tool
@@ -410,8 +448,9 @@ async def record_experiment(ctx: RunContext[Deps], directory: str, hypothesis: s
     """Run and record a computational experiment.
 
     directory: a folder under scratch/ in your sandbox containing run.py (and optionally requirements.txt).
-    run.py is executed in the sandbox and must write results.json. The code, results, and output are then
-    saved as a permanent experiment record.
+    run.py is executed in the sandbox and must write results.json. Each plot it saves (e.g. plot.png) needs a caption
+    in a .txt file of the same name (plot.txt). The code, results, plots, and output are then saved as a permanent
+    experiment record.
     """
     d = ctx.deps
     done = d.db.one('SELECT id FROM experiments WHERE idem = ?', (d.idem(ctx),))
@@ -431,6 +470,12 @@ async def record_experiment(ctx: RunContext[Deps], directory: str, hypothesis: s
         raise ModelRetry(
             f'run.py exited with code {result.exit_code} and did not write results.json.\n'
             f'stdout:\n{result.stdout[-2000:]}\nstderr:\n{result.stderr[-2000:]}'
+        )
+    uncaptioned = [f.name for f in host_dir.iterdir() if f.suffix.lower() in IMAGE_SUFFIXES and not f.with_suffix('.txt').exists()]
+    if uncaptioned:
+        raise ModelRetry(
+            f'These plots have no caption: {", ".join(uncaptioned)}. Have run.py write a caption for each plot to a .txt '
+            'file with the same name (plot.png -> plot.txt), then call record_experiment again.'
         )
     exp_id = d.db.insert(
         'INSERT INTO experiments (run_id, author, activity_id, hypothesis, path, exit_code, refs, created_at, idem) VALUES (?,?,?,?,?,?,?,?,?)',

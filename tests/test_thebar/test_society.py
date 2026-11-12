@@ -36,14 +36,14 @@ async def test_paper_notes_are_required(root):
     steps = [
         ('read_paper', {'paper_id': 1}),
         ('read_paper', {'paper_id': 2}),  # refused: notes for paper 1 are pending
-        ('save_paper_notes', {'paper_id': 1, 'citation': 'c', 'research_question': 'q', 'main_contribution': 'm',
-                              'method_and_assumptions': 'a', 'results': 'r', 'critical_assessment': 'x',
-                              'connection_to_our_question': 'y', 'connections_to_other_work': 'z'}),
+        ('save_paper_notes', {'paper_id': 1, 'notes': '## Citation\nc'}),  # refused: headings are missing
+        ('save_paper_notes', {'paper_id': 1, 'notes': '## Citation\nc\n## Research question\nq\n## Main contribution\nm\n## Method and assumptions\na\n## Results\nr\n## Critical assessment\nx\n## Connection to our research question\ny\n## Connections to other work\nz'}),
     ]
     society, run_id = await make(root, {'ardor': steps, 'ada': []})
     await society.run_activity(run_id, 'ardor', 'test')
     results = [r['result'] for r in society.db.all('SELECT result FROM tool_calls ORDER BY id')]
     assert 'Save notes for paper:1' in results[1]
+    assert 'missing these headings' in results[2]
     assert society.db.one("SELECT status FROM paper_reads WHERE paper_id = 1")['status'] == 'completed'
     notes = list((root / 'data/papers').glob('*/notes_*.md'))
     assert len(notes) == 1 and '## Critical assessment' in notes[0].read_text()
@@ -143,4 +143,30 @@ async def test_reading_progress_is_reported_and_kept(root):
     assert f'has pages 1 to {total}' in second
     prompt = society._activity_prompt(society.get_run(run_id), society.config.agents['ardor'])
     assert f'read to page {last}' in prompt
+    await society.shutdown()
+
+
+async def test_add_agent_to_existing_run(root):
+    path = root / 'config/agents/thea.yaml'
+    path.write_text(path.read_text().replace('enabled: true', 'enabled: false'))
+    society, run_id = await make(root, {'ardor': [], 'ada': [], 'thea': []})
+    assert 'thea' not in society.run_agents(run_id)
+    path.write_text(path.read_text().replace('enabled: false', 'enabled: true'))
+    society.add_agent(run_id, 'thea')
+    assert 'thea' in society.run_agents(run_id)
+    assert society.scheduler.get_job(f'{run_id}:thea') is not None
+    activity_id = await society.run_activity(run_id, 'thea', 'test')
+    assert society.db.one('SELECT status FROM activities WHERE id = ?', (activity_id,))['status'] == 'completed'
+    with pytest.raises(ValueError):
+        society.add_agent(run_id, 'nobody')
+    await society.shutdown()
+
+
+async def test_field_reading_every_fourth_activity(root):
+    society, run_id = await make(root, {'ardor': [], 'ada': [], 'thea': []})
+    seen = []
+    for _ in range(8):
+        seen.append('field-reading session' in society._activity_prompt(society.get_run(run_id), society.config.agents['thea']))
+        await society.run_activity(run_id, 'thea', 'test')
+    assert seen == [False, False, False, True, False, False, False, True]
     await society.shutdown()

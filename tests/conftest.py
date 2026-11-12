@@ -15,7 +15,8 @@ def root(tmp_path: Path) -> Path:
     society['sandbox']['enabled'] = False
     society['web_search'] = False
     (tmp_path / 'config/society.yaml').write_text(yaml.safe_dump(society))
-    for collection, name in [('post_bayesian', 'digital_twins_causality.pdf'), ('frontier_scaling', 'The Era of Experience Paper.pdf')]:
+    for collection, name in [('post_bayesian', 'digital_twins_causality.pdf'), ('frontier_scaling', 'The Era of Experience Paper.pdf'),
+                             ('philosophy_of_science', 'scientific_understanding_with_ai.pdf')]:
         (tmp_path / 'data/papers' / collection).mkdir(parents=True)
         shutil.copy(REPO / 'data/papers' / collection / name, tmp_path / 'data/papers' / collection / name)
     return tmp_path

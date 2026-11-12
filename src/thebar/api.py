@@ -127,6 +127,16 @@ async def stop_run(run_id: int):
     return society.get_run(run_id)
 
 
+@app.post('/api/runs/{run_id}/agents/{agent_id}/add')
+def add_agent(run_id: int, agent_id: str):
+    run_or_404(run_id)
+    try:
+        society.add_agent(run_id, agent_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return agent_status(run_id, agent_id)
+
+
 @app.post('/api/runs/{run_id}/agents/{agent_id}/pause')
 def pause_agent(run_id: int, agent_id: str):
     run_or_404(run_id)
@@ -226,7 +236,7 @@ def thread(thread_id: int):
 @app.get('/api/runs/{run_id}/timeline')
 def run_timeline(run_id: int):
     run_or_404(run_id)
-    return {'agents': society.run_agents(run_id), **timeline.build(society.db, run_id, UPDATES_THREAD)}
+    return {'agents': society.run_agents(run_id), **timeline.build(society.db, run_id, UPDATES_THREAD, ROOT)}
 
 
 @app.get('/api/runs/{run_id}/dms')
@@ -242,9 +252,14 @@ def search(q: str):
 @app.get('/api/ref/{ref}')
 def resolve_ref(ref: str):
     try:
-        return {'ref': ref, 'text': tools.resolve(society, ref)}
+        text = tools.resolve(society, ref)
     except (KeyError, ValueError, FileNotFoundError) as e:
         raise HTTPException(404, str(e))
+    images = []
+    if ref.startswith('experiment:'):
+        row = society.db.one('SELECT path FROM experiments WHERE id = ?', (ref.split(':')[1],))
+        images = timeline.experiment_images(ROOT, row['path'])
+    return {'ref': ref, 'text': text, 'images': images}
 
 
 # ---- Agents, papers, artifacts, experiments, tools ----
@@ -310,6 +325,7 @@ def experiments():
         folder = ROOT / (r['path'] or '')
         r['files'] = sorted(p.name for p in folder.iterdir()) if r['path'] and folder.exists() else []
         r['results'] = (folder / 'results.json').read_text()[:5000] if (folder / 'results.json').exists() else None
+        r['images'] = timeline.experiment_images(ROOT, r['path'])
     return rows
 
 

@@ -82,10 +82,17 @@ document.addEventListener('keydown', (e) => e.key === 'Escape' && closeModal());
 async function openRef(ref, extra = '') {
   const r = await api('/api/ref/' + ref);
   const pdf = ref.startsWith('paper:') ? ` <a href="/api/papers/${ref.split(':')[1]}/pdf" target="_blank">open PDF</a>` : '';
-  show(`<h3>${esc(ref)}${pdf}</h3>${extra}<pre>${linkify(r.text)}</pre>`);
+  show(`<h3>${esc(ref)}${pdf}</h3>${extra}${plots(r.images)}<pre>${linkify(r.text)}</pre>`);
 }
+const isImage = (path) => /\.(png|jpe?g|svg)$/i.test(path);
+const fileUrl = (path) => '/api/file?path=' + encodeURIComponent(path);
+// Plots with their captions; click a plot to see it full size.
+const plots = (images) => (images || []).map(im => `<figure style="margin:8px 0">
+  <img src="${fileUrl(im.path)}" style="max-width:100%;cursor:zoom-in;border:1px solid #ddd" onclick="openFile('${esc(im.path)}')">
+  <figcaption class="meta" style="white-space:pre-wrap">${im.caption ? linkify(im.caption) : '<i>no caption</i>'}</figcaption></figure>`).join('');
 async function openFile(path, extra = '') {
-  const r = await api('/api/file?path=' + encodeURIComponent(path));
+  if (isImage(path)) return show(`<h3>${esc(path)}</h3>${extra}<img src="${fileUrl(path)}" style="max-width:100%">`);
+  const r = await api(fileUrl(path));
   show(`<h3>${esc(path)}</h3>${extra}<pre>${linkify(r.text)}</pre>`);
 }
 const fileLink = (path) => `<span class="ref" onclick="openFile('${esc(path)}')">${esc(path)}</span>`;
@@ -193,6 +200,7 @@ const views = {
     const calls = await api('/api/tool_calls?limit=40');
     return '<h3>Experiments</h3>' + (exps.map(e => `<div class="card t-experiment"><b>${linkify('experiment:' + e.id)}</b> by ${e.author} · exit ${e.exit_code} · ${e.created_at}
       <div>${esc(e.hypothesis)}</div><div class="meta">${e.files.map(f => `<span class="ref" onclick="openFile('${e.path}/${f}')">${f}</span>`).join(' ')}</div>
+      ${plots(e.images)}
       <pre>${esc(e.results || '')}</pre></div>`).join('') || 'None yet.') +
       '<h3>Recent tool calls</h3>' + calls.map(c => `<div class="card t-tool_call"><div class="meta">${c.agent_id} · activity ${c.activity_id} · ${c.tool} · ${c.started_at}</div>
       <pre>${esc((c.args || '').slice(0, 1500))}</pre><details><summary>result</summary><pre>${esc(c.result || '')}</pre></details></div>`).join('');
@@ -227,6 +235,7 @@ function nodeCard(n, row, col) {
   } else {
     const extra = n.revision > 1 ? ` · revision ${n.revision}` : n.kind === 'experiment' ? ` · exit ${n.exit_code}` : '';
     body = `<div class="txt">${linkify((n.text || '').slice(0, 400))}</div><div class="meta">${n.key.split('@')[0]}${extra}</div>`;
+    if (n.images && n.images.length) body += `<img src="${fileUrl(n.images[0].path)}" style="width:100%;margin-top:4px">`;
   }
   return `<div class="node k-${n.kind}" data-key="${esc(n.key)}" style="--c:${c};grid-row:${row};grid-column:${col}"
     onclick="openNode('${esc(n.key)}')" onmouseenter="focusNode('${esc(n.key)}')" onmouseleave="focusNode(null)">
@@ -263,6 +272,7 @@ function describeCall(c) {
     case 'save_insight': case 'write_proposal': return `${c.tool === 'save_insight' ? 'Saved insight' : 'Wrote proposal'} <b>${esc(a.title)}</b>: ${linkify(r)}`;
     case 'record_experiment': return `Ran experiment in ${esc(a.directory)}: ${linkify(firstLine)}<div class="txt">${esc(a.hypothesis)}</div>`;
     case 'search_papers': return `Searched arXiv for <b>${esc(a.query)}</b>`;
+    case 'fetch_openalex_works': return `Fetched works from OpenAlex (${esc([a.search, a.filter].filter(Boolean).join('; '))}): ${esc(firstLine)}`;
     case 'download_paper': return `Downloaded ${esc(a.arxiv_id || a.pdf_url)}: ${linkify(r)}`;
     case 'read_reference': return `Looked up ${linkify(a.ref || '')}`;
     case 'shell': return `Ran <code>${esc(a.command)}</code>`;
@@ -280,6 +290,7 @@ async function openActivity(id) {
     ${a.error ? `<p style="color:#b00">${esc(a.error)}</p>` : ''}
     <h4>Public update</h4><div class="card t-update"><pre>${linkify(a.public_update || '(none)')}</pre></div>
     <h4>Produced</h4>${made.map(n => `<div class="chip" style="cursor:pointer" onclick="openNode('${esc(n.key)}')">${n.kind}: ${esc(n.title || n.key)}</div>`).join(' ') || '<span class="meta">nothing saved</span>'}
+    ${plots(made.flatMap(n => n.images || []))}
     <h4>What it did</h4>` +
     a.tool_calls.map((c, i) => `<div class="card t-tool_call"><span class="meta">${i + 1}. ${hhmm(c.started_at)}</span> ${describeCall(c)}
       <details><summary class="meta">arguments and result</summary><pre>${esc(c.args)}</pre><pre>${linkify(c.result || '(no result)')}</pre></details></div>`).join(''));

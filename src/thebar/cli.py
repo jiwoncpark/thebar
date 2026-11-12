@@ -11,7 +11,7 @@ app = typer.Typer(no_args_is_help=True)
 run_app = typer.Typer(no_args_is_help=True)
 agent_app = typer.Typer(no_args_is_help=True)
 app.add_typer(run_app, name='run', help='Create and control research runs.')
-app.add_typer(agent_app, name='agent', help='Pause or resume one agent.')
+app.add_typer(agent_app, name='agent', help='Add, pause, resume, or wake one agent.')
 
 
 def call(method: str, path: str, **kwargs):
@@ -71,6 +71,12 @@ def run_resume(run_id: int):
 @run_app.command('stop')
 def run_stop(run_id: int):
     typer.echo(call('POST', f'/api/runs/{run_id}/stop')['status'])
+
+
+@agent_app.command('add')
+def agent_add(agent_id: str, run: int = typer.Option(None, help='Run id. Defaults to the newest running run.')):
+    """Add an agent from config/agents/ to an existing run."""
+    show(call('POST', f'/api/runs/{run or latest_run()}/agents/{agent_id}/add'))
 
 
 @agent_app.command('pause')
